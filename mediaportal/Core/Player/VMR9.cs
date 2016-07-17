@@ -1436,7 +1436,7 @@ namespace MediaPortal.Player
           Vmr9Deinit();
         }
 
-        if (_vmr9Filter != null && if (GUIGraphicsContext.VideoRenderer != GUIGraphicsContext.VideoRendererType.madVR))
+        if (_vmr9Filter != null && GUIGraphicsContext.VideoRenderer != GUIGraphicsContext.VideoRendererType.madVR)
         {
           DirectShowUtil.RemoveFilter(_graphBuilder, _vmr9Filter);
           DirectShowUtil.ReleaseComObject(_vmr9Filter);
