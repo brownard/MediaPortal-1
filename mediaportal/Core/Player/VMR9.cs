@@ -576,7 +576,6 @@ namespace MediaPortal.Player
           Size client = GUIGraphicsContext.form.ClientSize;
           videoWin.SetWindowPosition(0, 0, client.Width, client.Height);
           gch = GCHandle.Alloc(_vmr9Filter);
-          //GCHandle.Alloc(_vmr9Filter);
         }
         else
         {
@@ -1440,7 +1439,8 @@ namespace MediaPortal.Player
         if (_vmr9Filter != null)
         {
           //gch.Free();
-          //DirectShowUtil.ReleaseComObject(_vmr9Filter);
+          DirectShowUtil.ReleaseComObject(_vmr9Filter);
+          DirectShowUtil.RemoveFilter(_graphBuilder, _vmr9Filter);
           Log.Debug("VMR9: Dispose 3");
         }
         _vmr9Filter = null;
