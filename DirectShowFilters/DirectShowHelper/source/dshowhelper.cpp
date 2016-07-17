@@ -927,6 +927,8 @@ BOOL MadInit(IVMR9Callback* callback, DWORD width, DWORD height, DWORD dwD3DDevi
   if (!madFilter)
     return FALSE;
 
+  m_pVMR9Filter->Release();
+
   return TRUE;
 }
 
@@ -936,15 +938,17 @@ void MadDeinit()
   {
     Log("MPMadDshow::MadDeinit shutdown start");
     m_madPresenter->Shutdown();
+    Sleep(750);
     ULONG refCount = m_pVMR9Filter->Release();
     Log("MPMadDshow::MadDeinit reference counter to be released : (%d)", refCount);
     for (ULONG i = 1; i < refCount; ++i)
     {
       m_pVMR9Filter->Release();
+      Sleep(750);
     }
     m_pVMR9Filter = nullptr;
     Log("MPMadDshow::MadDeinit shutdown done");
-    Sleep(50);
+    Sleep(750);
   }
   catch(...)
   {
