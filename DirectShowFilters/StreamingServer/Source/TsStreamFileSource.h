@@ -18,22 +18,20 @@ along with this library; if not, write to the Free Software Foundation, Inc.,
 // A file source that is a plain byte stream (rather than frames)
 // C++ header
 
-#ifndef _TS_STREAM_FILE_SOURCE_HH
-#define _TS_STREAM_FILE_SOURCE_HH
+#pragma once
 
 #ifndef _FRAMED_FILE_SOURCE_HH
 #include "FramedFileSource.hh"
 #endif
-#include "FileReader.h"
-#include "MultiFileReader.h"
 #include "TsBuffer.h"
-#include "TsFileSeek.h"
+#include "TsDuration.h"
+#include <streams.h>    // CRefTime
 
 
 class TsStreamFileSource: public FramedFileSource {
 public:
 	static TsStreamFileSource* createNew(UsageEnvironment& env,
-		wchar_t const* fileName,
+		wchar_t const* fileName, CTsDuration *pDuration,
 		unsigned preferredFrameSize = 0,
 		unsigned playTimePerFrame = 0,
 		int channelType = 0);
@@ -78,6 +76,5 @@ private:
 	unsigned fLastPlayTime;
 	u_int64_t fFileSize;
 	Boolean fDeleteFidOnClose;
+	Boolean m_isTimeshift;
 };
-
-#endif

@@ -26,6 +26,8 @@
 #include <strmif.h>
 //#include <mtype.h>
 #include "GolombBuffer.h"
+#include "PmtParser.h"
+#include "HEVC\HevcNalDecode.h"
 
 enum mpeg_t {mpegunk, mpeg1, mpeg2};
 
@@ -130,7 +132,7 @@ struct pshdr
 
 		WORD crc;
 
-		int FrameSize, nBytesPerSec;
+		int FrameSize, nBytesPerSec, nSamplesPerSec;
 		REFERENCE_TIME rtDuration;
 	};
 
@@ -149,6 +151,26 @@ struct pshdr
 		BYTE dsurmod:2;
 		BYTE lfeon:1;
 		// the rest is unimportant for us
+		int nBytesPerSec, nSamplesPerSec;
+		WORD nChannels;
+	};
+
+	class eac3hdr
+	{
+	public:
+		WORD sync;
+		BYTE strmtyp:2;
+		BYTE substreamid:3;
+		WORD frmsiz;
+		BYTE fscod:2;
+		BYTE fscod2:2;
+		BYTE acmod:3;
+		BYTE lfeon:1;
+		BYTE bsid:5;
+		BYTE bsmod:3;
+		// the rest is unimportant for us
+		int nBytesPerSec, nSamplesPerSec;
+		WORD nChannels;
 	};
 
 	class dtshdr
@@ -324,7 +346,7 @@ struct pshdr
 		  pps = NULL;
 			spslen = 0;
 			ppslen = 0;
-			AvgTimePerFrame = 0;
+			AvgTimePerFrame = 370000;  //27 Hz
 			ar = 0;
 			arx = 0;
 			ary = 0;
@@ -332,6 +354,7 @@ struct pshdr
 			height = 0;
 		}
 	};
+
 
 	struct vc1hdr
 	{
@@ -370,12 +393,37 @@ struct BasicVideoInfo
 		arx=0;
 		ary=0;
 		isInterlaced=0;
-		streamType;
+		streamType=0;
 		isValid=false;
 	}
 };
 
-class CFrameHeaderParser:public CGolombBuffer
+struct BasicAudioInfo
+{
+	int sampleRate;
+	int channels;
+	int streamType;
+	unsigned int streamIndex;
+	int bitrate;
+	int aacObjectType;
+	bool isValid;
+	bool pmtValid;
+
+	BasicAudioInfo()
+	{
+		sampleRate=0;
+		channels=0;
+		streamType = SERVICE_TYPE_AUDIO_UNKNOWN;
+		streamIndex=0;
+	  bitrate=0;
+		aacObjectType=0;
+		isValid=false;
+		pmtValid=false;
+	}
+};
+
+
+class CFrameHeaderParser:public CGolombBuffer, public HEVC::HevcNalDecode
 {
 	int m_tslen; // transport stream packet length (188 or 192 bytes, auto-detected)
 
@@ -389,6 +437,7 @@ public:
 	bool Read(mpahdr& h, int len, bool fAllowV25, CMediaType* pmt = NULL);
 	bool Read(aachdr& h, int len, CMediaType* pmt = NULL);
 	bool Read(ac3hdr& h, int len, CMediaType* pmt = NULL);
+	bool Read(eac3hdr& h, int len, CMediaType* pmt = NULL);
 	bool Read(dtshdr& h, int len, CMediaType* pmt = NULL);
 	bool Read(lpcmhdr& h, CMediaType* pmt = NULL);
 	bool Read(hdmvlpcmhdr& h, CMediaType* pmt = NULL);
@@ -402,12 +451,14 @@ public:
 	bool Read(trsechdr& h);
 	bool Read(pvahdr& h, bool fSync = true);
 	bool Read(avchdr& h, int len, CMediaType* pmt = NULL, bool reset = true);
+	bool Read(HEVC::hevchdr& h, int len, CMediaType* pmt = NULL, bool reset = true);
 	bool Read(vc1hdr& h, int len, CMediaType* pmt = NULL);
 
 	void RemoveMpegEscapeCode(BYTE* dst, BYTE* src, int length);
 
 	void DumpSequenceHeader(seqhdr h);
 	void DumpAvcHeader(avchdr h);
+	void DumpHevcHeader(HEVC::hevchdr h);
 };
 
 #endif
