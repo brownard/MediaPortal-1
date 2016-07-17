@@ -1427,6 +1427,8 @@ namespace MediaPortal.Player
         else if (GUIGraphicsContext.VideoRenderer == GUIGraphicsContext.VideoRendererType.madVR)
         {
           Log.Debug("VMR9: Dispose MadDeinit - thread : {0}", Thread.CurrentThread.Name);
+          gch.Free();
+          DirectShowUtil.ReleaseComObject(_vmr9Filter);
           MadDeinit();
           Log.Debug("VMR9: Dispose 2");
         }
@@ -1437,8 +1439,8 @@ namespace MediaPortal.Player
 
         if (_vmr9Filter != null)
         {
-          gch.Free();
-          DirectShowUtil.ReleaseComObject(_vmr9Filter);
+          //gch.Free();
+          //DirectShowUtil.ReleaseComObject(_vmr9Filter);
           Log.Debug("VMR9: Dispose 3");
         }
         _vmr9Filter = null;
