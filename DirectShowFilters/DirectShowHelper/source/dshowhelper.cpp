@@ -916,13 +916,16 @@ BOOL MadInit(IVMR9Callback* callback, DWORD width, DWORD height, DWORD dwD3DDevi
   Log("MPMadDshow::MadInit 1");
 
   m_madPresenter = new MPMadPresenter(callback, width, height, parent, m_pDevice, pMediaControl);
-  m_pVMR9Filter = *madFilter = m_madPresenter->Initialize();
+  m_pVMR9Filter = m_madPresenter->Initialize();
   Log("MPMadDshow::MadInit 2");
+  if (m_pVMR9Filter)
+  {
+    *madFilter = m_pVMR9Filter;
+  }
+  Log("MPMadDshow::MadInit 3");
 
   if (!madFilter)
     return FALSE;
-
-  m_pVMR9Filter->Release();
 
   return TRUE;
 }

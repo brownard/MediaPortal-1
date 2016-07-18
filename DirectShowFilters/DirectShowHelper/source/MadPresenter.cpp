@@ -128,6 +128,19 @@ HRESULT MPMadPresenter::Shutdown()
       m_pCallback = nullptr;
     }
 
+    //Log("MPMadPresenter::Shutdown() Scope 2 ");
+
+    if (m_pSubRender)
+      m_pSubRender->SetCallback(nullptr);
+
+    //Log("MPMadPresenter::Shutdown() Scope 3 ");
+
+    if (m_subProxy)
+    {
+      m_subProxy->Release();
+      m_subProxy = nullptr;
+    }
+
     //Log("MPMadPresenter::Shutdown() done ");
   } // Scope for autolock
 
@@ -149,15 +162,6 @@ HRESULT MPMadPresenter::Shutdown()
       m_pCommand->SendCommandBool("disableExclusiveMode", true);
       m_pCommand->SendCommand("restoreDisplayModeNow");
       //Log("MPMadPresenter::Shutdown() 5");
-    }
-
-    if (m_pSubRender)
-      m_pSubRender->SetCallback(nullptr);
-
-    if (m_subProxy)
-    {
-      m_subProxy->Release();
-      m_subProxy = nullptr;
     }
 
     if (m_pOsdServices)

@@ -175,7 +175,6 @@ namespace MediaPortal.Player
     private bool _inMenu = false;
     private IRender _renderFrame;
     internal IBaseFilter _vmr9Filter = null;
-    private GCHandle gch;
     private int _videoHeight, _videoWidth;
     private int _videoAspectRatioX, _videoAspectRatioY;
     private IQualProp _qualityInterface = null;
@@ -575,7 +574,6 @@ namespace MediaPortal.Player
           videoWin.put_Owner(GUIGraphicsContext.ActiveForm);
           Size client = GUIGraphicsContext.form.ClientSize;
           videoWin.SetWindowPosition(0, 0, client.Width, client.Height);
-          gch = GCHandle.Alloc(_vmr9Filter);
         }
         else
         {
@@ -1426,8 +1424,6 @@ namespace MediaPortal.Player
         else if (GUIGraphicsContext.VideoRenderer == GUIGraphicsContext.VideoRendererType.madVR)
         {
           Log.Debug("VMR9: Dispose MadDeinit - thread : {0}", Thread.CurrentThread.Name);
-          gch.Free();
-          DirectShowUtil.ReleaseComObject(_vmr9Filter);
           MadDeinit();
           Log.Debug("VMR9: Dispose 2");
         }
@@ -1436,10 +1432,14 @@ namespace MediaPortal.Player
           Vmr9Deinit();
         }
 
-        if (_vmr9Filter != null && GUIGraphicsContext.VideoRenderer != GUIGraphicsContext.VideoRendererType.madVR)
+        if (_vmr9Filter != null)
         {
+          //if (GUIGraphicsContext.VideoRenderer == GUIGraphicsContext.VideoRendererType.madVR)
+          //{
+          //  MadvrInterface.EnableExclusiveMode(false, _vmr9Filter);
+          //}
           DirectShowUtil.RemoveFilter(_graphBuilder, _vmr9Filter);
-          DirectShowUtil.ReleaseComObject(_vmr9Filter);
+          DirectShowUtil.FinalReleaseComObject(_vmr9Filter);
           Log.Debug("VMR9: Dispose 3");
         }
         _vmr9Filter = null;
