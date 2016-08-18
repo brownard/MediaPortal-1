@@ -52,9 +52,9 @@
 // uncomment the //LogDebug to enable extra logging
 #define LOG_SAMPLES //LogDebug
 #define LOG_OUTSAMPLES //LogDebug
-
 #define LOG_SAMPLES_HEVC //LogDebug
 #define LOG_OUTSAMPLES_HEVC //LogDebug
+#define LOG_VID_BITRATE //LogDebug
 
 extern void LogDebug(const char *fmt, ...);
 extern void LogRotate();
@@ -136,8 +136,8 @@ CDeMultiplexer::CDeMultiplexer(CTsDuration& duration,CTsReaderFilter& filter)
   m_FirstVideoSample = 0x7FFFFFFF00000000LL;
   m_LastVideoSample = 0;
   
-  m_sampleTime = GET_TIME_NOW();
-  m_sampleTimePrev = GET_TIME_NOW();
+  m_sampleTime = 0;
+  m_sampleTimePrev = 0;
   m_byteRead = 0;
   m_bitRate = 0;
   m_LastDataFromRtsp = GET_TIME_NOW();
@@ -185,7 +185,7 @@ CDeMultiplexer::~CDeMultiplexer()
   m_bShuttingDown = true;
   //stop file read thread
   StopThread(5000);
-  Flush(true);
+  Flush(true, false);
   delete m_pCurrentAudioBuffer;
   delete m_pCurrentSubtitleBuffer;
   delete m_mpegPesParser;
@@ -399,6 +399,37 @@ bool CDeMultiplexer::GetAudioStreamType(int stream,CMediaType& pmt, int iPositio
       pmt.SetFormatType(&FORMAT_WaveFormatEx);
       pmt.SetFormat(AC3AudioFormat,sizeof(AC3AudioFormat));
       break;
+    case SERVICE_TYPE_AUDIO_DTS:
+      pmt.InitMediaType();
+      pmt.SetType      (& MEDIATYPE_Audio);
+      pmt.SetSubtype   (& MEDIASUBTYPE_DTS2);
+      pmt.SetSampleSize(1);
+      pmt.SetTemporalCompression(FALSE);
+      pmt.SetVariableSize();
+      pmt.SetFormatType(&FORMAT_WaveFormatEx);
+      pmt.SetFormat(DTSAudioFormat,sizeof(DTSAudioFormat));
+      break;
+    case SERVICE_TYPE_AUDIO_DTS_HD:
+    case SERVICE_TYPE_AUDIO_DTS_HDMA:
+      pmt.InitMediaType();
+      pmt.SetType      (& MEDIATYPE_Audio);
+      pmt.SetSubtype   (& MEDIASUBTYPE_DTS_HD);
+      pmt.SetSampleSize(1);
+      pmt.SetTemporalCompression(FALSE);
+      pmt.SetVariableSize();
+      pmt.SetFormatType(&FORMAT_WaveFormatEx);
+      pmt.SetFormat(DTSHDAudioFormat,sizeof(DTSHDAudioFormat));
+      break;
+    case SERVICE_TYPE_DCII_OR_LPCM: //HDMV/BD format LPCM audio
+      pmt.InitMediaType();
+      pmt.SetType      (& MEDIATYPE_Audio);
+      pmt.SetSubtype   (& MEDIASUBTYPE_BD_LPCM_AUDIO);
+      pmt.SetSampleSize(1);
+      pmt.SetTemporalCompression(FALSE);
+      pmt.SetVariableSize();
+      pmt.SetFormatType(&FORMAT_WaveFormatEx);
+      pmt.SetFormat(LPCMAudioFormat,sizeof(LPCMAudioFormat));
+      break;
   }
   
   //Modify with generated WaveFormatEx, correct channel count and sampling rate if available
@@ -581,7 +612,7 @@ bool CDeMultiplexer::GetVideoStreamType(CMediaType &pmt)
   return false;
 }
 
-void CDeMultiplexer::FlushVideo()
+void CDeMultiplexer::FlushVideo(bool isMidStream)
 {
   //LogDebug("demux:flush video");
   CAutoLock flock (&m_sectionFlushVideo);
@@ -597,13 +628,7 @@ void CDeMultiplexer::FlushVideo()
   m_p.Free();
   m_lastStart = 0;
   m_pl.RemoveAll();
-  m_fHasAccessUnitDelimiters = false;
 
-  m_VideoPrevCC = -1;
-  m_bFirstGopFound = false;
-  m_bSecondGopFound = false;
-  m_bFrame0Found = false;
-  m_mpegParserReset = true;
   m_FirstVideoSample = 0x7FFFFFFF00000000LL;
   m_LastVideoSample = 0;
   m_lastVideoPTS.IsValid = false;
@@ -617,15 +642,24 @@ void CDeMultiplexer::FlushVideo()
   m_MinVideoDelta = 10.0 ;
   _InterlockedAnd(&m_AVDataLowCount, 0) ;
   _InterlockedAnd(&m_AudioDataLowPauseTime, 0) ;
-  _InterlockedAnd(&m_VideoDataLowPauseTime, 0) ;
   if (!m_bShuttingDown)
   {
     m_filter.m_bRenderingClockTooFast=false;
   }
   m_bSetVideoDiscontinuity=true;
-  m_bVideoSampleLate=false;
+	m_VideoPrevCC = -1;
 
-  if (m_filter.IsSeeking() && m_filter.GetVideoPin()->IsConnected() && !IsMediaChanging())
+	m_bFrame0Found = false;
+
+  if ((!m_filter.IsSeeking() && !isMidStream) || m_filter.IsTimeShifting() || !m_bFirstGopParsed)
+  {
+  	//Don't reset these when seeking in non-timeshift files, after we have parsed the first Gop
+    m_mpegParserReset = true;
+	  m_fHasAccessUnitDelimiters = false;	
+	  m_bFirstGopFound = false;
+	  m_bSecondGopFound = false;
+  }
+  if (m_filter.IsSeeking() && m_filter.IsTimeShifting() && m_filter.GetVideoPin()->IsConnected() && !IsMediaChanging())
   {
     m_mpegPesParser->VideoValidReset(); 
   }
@@ -665,7 +699,6 @@ void CDeMultiplexer::FlushAudio()
   m_MinAudioDelta = 10.0;
   _InterlockedAnd(&m_AVDataLowCount, 0);
   _InterlockedAnd(&m_AudioDataLowPauseTime, 0) ;
-  _InterlockedAnd(&m_VideoDataLowPauseTime, 0) ;
   if (!m_bShuttingDown)
   {
     m_filter.m_bRenderingClockTooFast=false;
@@ -729,11 +762,11 @@ void CDeMultiplexer::FlushSubtitle()
 }
 
 /// Flushes all buffers
-void CDeMultiplexer::Flush(bool clearAVready)
+void CDeMultiplexer::Flush(bool clearAVready, bool isMidStream)
 {
   if (m_bFlushRunning) return;
     
-  LogDebug("demux:Flush(), clearAVready = %d", clearAVready);
+  LogDebug("demux:Flush(), clearAVready = %d, isMidStream = %d", clearAVready, isMidStream);
 
   m_bFlushRunning = true; //Stall GetVideo()/GetAudio()/GetSubtitle() calls from pins 
 
@@ -755,7 +788,7 @@ void CDeMultiplexer::Flush(bool clearAVready)
   m_iAudioReadCount = 0;
   m_LastDataFromRtsp = GET_TIME_NOW();
   FlushAudio();
-  FlushVideo();
+  FlushVideo(isMidStream);
   FlushSubtitle();
   m_bFlushDelegated = false;
   m_bReadAheadFromFile = false;  
@@ -1081,7 +1114,7 @@ bool CDeMultiplexer::Start(DWORD timeout)
   DWORD m_Time = GET_TIME_NOW();
   m_hadPESfail = 0;
   
-  while((GET_TIME_NOW() - m_Time) < timeout)
+  while (dwBytesProcessed < INITIAL_READ_SIZE && (GET_TIME_NOW() - m_Time) < timeout)
   {
     m_bEndOfFile = false;  //reset eof every time through to ignore a false eof due to slow rtsp startup
     int BytesRead = ReadFromFile(READ_SIZE);    
@@ -1090,38 +1123,41 @@ bool CDeMultiplexer::Start(DWORD timeout)
       BytesRead = 0;
       Sleep(10);
     }      
-	  // LogDebug("demux:Start() BytesRead:%d, BytesProcessed:%d", BytesRead, dwBytesProcessed);
-    if (dwBytesProcessed>INITIAL_READ_SIZE || GetAudioStreamCount()>0) //Wait for first PAT to be found
-    {
-      if (  (!m_mpegPesParser->basicAudioInfo.isValid ||
-            ((m_pids.videoPids.size() > 0 && m_pids.videoPids[0].Pid > 1) &&                   //There is a video stream.....
-              (!m_mpegPesParser->basicVideoInfo.isValid ||               //and the first GOP header is not parsed....
-              !(m_vidPTScount > 5 || m_vidDTScount > 5 || !m_filter.m_bUseFPSfromDTSPTS || m_bUsingGOPtimestamp)))) &&  //or we havent seen enough PTS/DTS timestamps....
-           dwBytesProcessed<INITIAL_READ_SIZE)                                       //and we have not reached the data limit or the audio hasn't been parsed
-      {
-        //We are waiting for the first video GOP header to be parsed
-        //so that OnVideoFormatChanged() can be triggered if necessary
-        dwBytesProcessed+=BytesRead;
-        if (m_hadPESfail > 64)
-        {
-          //Probably initial decryption problems so allow more time....
-          timeout = 60000;
-        }
-        continue;
-      }
+    dwBytesProcessed+=BytesRead;
 
+    if (m_hadPESfail > 64)
+    {
+      //Probably initial decryption problems so allow more time....
+      timeout = 60000;
+    }
+	  
+    if (GetAudioStreamCount()>0) //Wait for first PAT to be found
+    {
+      if (!m_mpegPesParser->basicAudioInfo.isValid) continue; //The audio hasn't been parsed...
+
+      //Wait for the first video GOP header to be parsed (if there is a video stream)
+      //so that OnVideoFormatChanged() can be triggered if necessary. 
+      if (m_pids.videoPids.size() > 0 && m_pids.videoPids[0].Pid > 1) //There is a video stream
+      {
+        if (!m_mpegPesParser->basicVideoInfo.isValid) continue;  //The first GOP header is not parsed...
+        if (m_filter.m_bUseFPSfromDTSPTS && !m_bUsingGOPtimestamp && m_vidPTScount < 6 && m_vidDTScount < 6) continue;  //We havent seen enough PTS/DTS timestamps....
+      }
+            
+      //Success !!
+      //Move back to beginning of file (or RTSP memory buffer)
+      m_filter.SetSeeking(true); //Treat this as a 'seek' operation.
       m_reader->SetFilePointer(0,FILE_BEGIN);
-      //Flush(true);
       //Flushing is delegated to CDeMultiplexer::ThreadProc()
-      //DelegatedFlush(true, false);
+      DelegatedFlush(true, true);
+      m_filter.SetSeeking(false);
       m_streamPcr.Reset();
       m_bStarting=false;
-	    LogDebug("demux:Start() Succeeded : BytesProcessed:%d, DTS/PTS count = %d/%d, GOPts = %d", dwBytesProcessed, m_vidDTScount, m_vidPTScount, m_bUsingGOPtimestamp);
+	    LogDebug("demux:Start() Succeeded : BytesProcessed:%d, DTS/PTS count = %d/%d, GOPts = %d", dwBytesProcessed+BytesRead, m_vidDTScount, m_vidPTScount, m_bUsingGOPtimestamp);
       return true;
     }
-    dwBytesProcessed+=BytesRead;
     Sleep(1);
   }
+  
   m_streamPcr.Reset();
   m_iAudioReadCount=0;
   m_bStarting=false;
@@ -1160,8 +1196,6 @@ int CDeMultiplexer::ReadAheadFromFile(ULONG lDataLength)
   {
     _InterlockedAnd(&m_AVDataLowCount, 0);
     _InterlockedAnd(&m_AudioDataLowPauseTime, 0) ;
-    _InterlockedAnd(&m_VideoDataLowPauseTime, 0) ;
-    m_bVideoSampleLate=false;
     m_bAudioSampleLate=false;
   }
   else if (m_filter.m_bStreamCompensated 
@@ -1169,11 +1203,6 @@ int CDeMultiplexer::ReadAheadFromFile(ULONG lDataLength)
            && (SizeRead < (m_filter.IsUNCfile() ? MIN_READ_SIZE_UNC : MIN_READ_SIZE)))
   {
     if ((m_vecAudioBuffers.size()==0) && m_bAudioSampleLate)
-    {
-      // No buffer and nothing to read....Running very low on data
-      _InterlockedIncrement(&m_AVDataLowCount);   
-    }
-    if ((m_vecVideoBuffers.size()==0) && m_bVideoSampleLate)
     {
       // No buffer and nothing to read....Running very low on data
       _InterlockedIncrement(&m_AVDataLowCount);   
@@ -1230,7 +1259,10 @@ int CDeMultiplexer::ReadFromFile(ULONG lDataLength)
     if (dwReadBytes > 0)
     {
       //yes, then process the raw data
-      OnRawData2(m_pFileReadBuffer,(int)dwReadBytes);
+      if (OnRawData2(m_pFileReadBuffer,(int)dwReadBytes))
+      {
+        Sleep(200); //Not enough data to initially sync or re-sync to stream
+      }
       m_LastDataFromRtsp = GET_TIME_NOW();
     }
     else
@@ -1285,7 +1317,11 @@ int CDeMultiplexer::ReadFromFile(ULONG lDataLength)
       if (dwReadBytes > 0)
       {        
         //process data
-        OnRawData2(m_pFileReadBuffer,(int)dwReadBytes);        
+        if (OnRawData2(m_pFileReadBuffer,(int)dwReadBytes))       
+        {
+          //Not enough data to initially sync ro re-sync to stream, so stall for a while
+          Sleep(200);
+        }
       }
       else
       {
@@ -1551,7 +1587,6 @@ void CDeMultiplexer::FillAudio(CTsHeader& header, byte* tsPacket, int bufferOffs
               else if (Delta < 0.1)
               {
                 LogDebug("Demux : Audio to render too late= %03.3f Sec, FileReadLatency: %d ms", Delta, m_fileReadLatency) ;
-                //  m_filter.m_bRenderingClockTooFast=true;
                 _InterlockedIncrement(&m_AVDataLowCount);   
                 m_MinAudioDelta+=1.0;
                 m_MinVideoDelta+=1.0;                
@@ -2136,7 +2171,9 @@ void CDeMultiplexer::FillAudio(CTsHeader& header, byte* tsPacket, int bufferOffs
           CheckMediaChange(header.Pid, false);   
         }
 
-        if (m_AudioValidPES && m_filter.GetAudioPin()->IsConnected() && m_mpegPesParser->basicAudioInfo.isValid)
+        if ((m_AudioValidPES && m_filter.GetAudioPin()->IsConnected() && m_mpegPesParser->basicAudioInfo.isValid) && 
+            (!m_filter.GetVideoPin()->IsConnected() || 
+             (m_filter.GetVideoPin()->IsConnected() && m_bFrame0Found))) //Prevent video and audio getting too far out of step at start of play
         {
           if (m_bSetAudioDiscontinuity)
           {
@@ -2298,18 +2335,6 @@ void CDeMultiplexer::FillVideoHEVC(CTsHeader& header, byte* tsPacket)
   if (headerlen < 188)
   {            
     int dataLen = 188-headerlen;
-
-  	m_byteRead = m_byteRead + dataLen;
-  	m_sampleTime = GET_TIME_NOW();
-  	DWORD elapsedTime = m_sampleTime - m_sampleTimePrev;
-  
-  	if (elapsedTime >= 5000)
-  	{
-      m_bitRate = (float)m_byteRead*8*1000/elapsedTime;
-  	  m_filter.OnBitRateChanged(m_bitRate);
-  	  m_sampleTimePrev = m_sampleTime;
-  	  m_byteRead = 0;
-    }
   
     p->SetCount(dataLen);
     p->SetData(&tsPacket[headerlen],dataLen);
@@ -2543,7 +2568,11 @@ void CDeMultiplexer::FillVideoHEVC(CTsHeader& header, byte* tsPacket)
       
       memcpy (p2->GetData(), &dwNalStart, sizeof(dwNalStart)); //Insert NAL start code
       memcpy (p2->GetData()+sizeof(dwNalStart), (start+3), size);
-      LOG_SAMPLES_HEVC("HEVC: Input p2 NALU Type: %d (%d), m_p->rtStart: %d, m_p->rtPrevStart: %d", (*(p2->GetData()+4)&0x7e)>>1, p2->GetCount(), (int)m_p->rtStart, (int)m_p->rtPrevStart);
+
+      //Get the NAL ID
+      char nalIDp2 = ((*(p2->GetData()+4) & 0xfe) >> 1); //Note the 'forbidden_zero_bit' is included i.e. it must be zero for a valid NAL ID
+      
+      LOG_SAMPLES_HEVC("HEVC: Input p2 NALU Type: %d (%d), m_p->rtStart: %d, m_p->rtPrevStart: %d", nalIDp2, p2->GetCount(), (int)m_p->rtStart, (int)m_p->rtPrevStart);
       
       if ((m_p->rtStart != m_p->rtPrevStart) && (m_p->rtPrevStart != Packet::INVALID_TIME))
       {
@@ -2559,45 +2588,37 @@ void CDeMultiplexer::FillVideoHEVC(CTsHeader& header, byte* tsPacket)
       }
 
       //Decide if we should transfer NALU packets to output sample
-      
-      if((*(p2->GetData()+4)&0xfe) == (35*2)) //Check for AUD
+      if(nalIDp2 == HEVC_NAL_AUD) //Check for AUD
       {
         m_fHasAccessUnitDelimiters = true;
       }
-
-//      if(*(p2->GetData()+4) == 0x06 && *(p2->GetData()+5) == 0x04) 
-//      {
-//        LogDebug("demux: p2 HEVC SEI CC 0x%x, 0x%x, 0x%x, 0x%x, 0x%x, 0x%x, 0x%x, 0x%x, 0x%x, 0x%x, 0x%x, 0x%x", 
-//                                                                                      *(p2->GetData()+6), *(p2->GetData()+7), *(p2->GetData()+8), *(p2->GetData()+9), 
-//                                                                                      *(p2->GetData()+10), *(p2->GetData()+11), *(p2->GetData()+12), *(p2->GetData()+13),
-//                                                                                      *(p2->GetData()+14), *(p2->GetData()+15), *(p2->GetData()+16), *(p2->GetData()+17));
-//      }
         
-      if(((*(p2->GetData()+4)&0xfe) == (35*2)) || (!m_fHasAccessUnitDelimiters && m_isNewNALUTimestamp)) //Check for AUD
+      if((nalIDp2 == HEVC_NAL_AUD) || (!m_fHasAccessUnitDelimiters && m_isNewNALUTimestamp)) //Check for AUD
       {
         m_isNewNALUTimestamp = false;
         if ((m_pl.GetCount()>0) && m_mVideoValidPES)
         {
           //Transfer NALU packets to output sample
           bool Gop = false;
-          char nalID = 0;
+          bool foundIRAP = false;
           
           //Copy available NALUs into new packet 'p' (for the next video buffer)
           CAutoPtr<Packet> p(new Packet());
           p->rtStart = Packet::INVALID_TIME;
 
+          LOG_OUTSAMPLES_HEVC("HEVC: Transfer to p, p->len = %d, m_pl.len = %d, hasAUD = %d", p->GetCount(), m_pl.GetCount(), m_fHasAccessUnitDelimiters);
+
           if (!m_fHasAccessUnitDelimiters)
           {
             //Add fake AUD....
-            DWORD size = 4;
-            DWORD data9 = 0x00100146;            
             DWORD dwNalStart = 0x01000000;  //Insert NAL start code 
+            DWORD dwFakeAUD  = 0x00500146;  //AUD with IPB pic_type        
               
-            p->SetCount (size+sizeof(dwNalStart));
+            p->SetCount (sizeof(dwNalStart)+sizeof(dwFakeAUD));
             
             memcpy (p->GetData(), &dwNalStart, sizeof(dwNalStart));  //Insert NAL start code
-            memcpy (p->GetData()+sizeof(dwNalStart), &data9, size);
-            //LogDebug("HEVC: Fake AUD: %x %x %x %x %x %x",  p->GetAt(0), p->GetAt(1), p->GetAt(2), p->GetAt(3), p->GetAt(4), p->GetAt(5));
+            memcpy (p->GetData()+sizeof(dwNalStart), &dwFakeAUD, sizeof(dwFakeAUD));            
+            //LogDebug("HEVC: Insert Fake AUD: %x %x %x %x %x %x %x %x",  p->GetAt(0), p->GetAt(1), p->GetAt(2), p->GetAt(3), p->GetAt(4), p->GetAt(5), p->GetAt(6), p->GetAt(7));
           }
           
           while(m_pl.GetCount()>0)
@@ -2607,13 +2628,47 @@ void CDeMultiplexer::FillVideoHEVC(CTsHeader& header, byte* tsPacket)
             
             //if (!iFrameScanner.SeenEnough())
             //  iFrameScanner.ProcessNALU(p2);
-            LOG_OUTSAMPLES_HEVC("HEVC: Output p4 NALU Type: %d (%d), rtStart: %d", (p4->GetAt(4)&0x7e)>>1, p4->GetCount(), (int)p->rtStart);
+            LOG_OUTSAMPLES_HEVC("HEVC: Output p4 NALU Type: %d (%d), rtStart: %d", (p4->GetAt(4) & 0xfe)>>1, p4->GetCount(), (int)p->rtStart);
             
-            nalID = p4->GetAt(4);
-            if (((nalID & 0xfe) >= (32*2)) && ((nalID & 0xfe) <= (34*2))) //Process VPS, SPS & PPS data
+            char nalIDp4 = ((p4->GetAt(4) & 0xfe) >> 1);
+            //LogDebug("HEVC: All NAL, type = %d", nalIDp4);
+            if ((nalIDp4 == HEVC_NAL_VPS) || (nalIDp4 == HEVC_NAL_SPS) || (nalIDp4 == HEVC_NAL_PPS)) //Process VPS, SPS & PPS data
             {
-              Gop = m_mpegPesParser->OnTsPacket(p4->GetData(), p4->GetCount(), 3, m_mpegParserReset);
+              //LogDebug("HEVC: VPS/SPS/PPS NAL, type = %d", nalIDp4);
+              Gop = m_mpegPesParser->OnTsPacket(p4->GetData(), p4->GetCount(), VIDEO_STREAM_TYPE_HEVC, m_mpegParserReset);
               m_mpegParserReset = false;
+            }
+            
+            //Check for random-access entry points in the stream
+            if ((nalIDp4 >= HEVC_NAL_BLA_W_LP) && (nalIDp4 <= HEVC_NAL_CRA_NUT))
+            {
+              foundIRAP = true;
+              
+              if (!m_bFrame0Found)  //First random access point after stream start or seek - add SPS/PPS/VPS
+              {
+                LogDebug("HEVC: Random access point, insert SPS(%I64d), PPS(%I64d), VPS(%I64d)", m_mpegPesParser->basicVideoInfo.spslen, m_mpegPesParser->basicVideoInfo.ppslen, m_mpegPesParser->basicVideoInfo.vpslen);
+                if (m_mpegPesParser->basicVideoInfo.spslen > 0)
+                {
+                  //Insert SPS NAL
+                  size_t currCount = p->GetCount();
+                  p->SetCount (currCount + m_mpegPesParser->basicVideoInfo.spslen);
+                  memcpy (p->GetData() + currCount, m_mpegPesParser->basicVideoInfo.sps, m_mpegPesParser->basicVideoInfo.spslen);
+                }
+                if (m_mpegPesParser->basicVideoInfo.ppslen > 0)
+                {
+                  //Insert PPS NAL
+                  size_t currCount = p->GetCount();
+                  p->SetCount (currCount + m_mpegPesParser->basicVideoInfo.ppslen);
+                  memcpy (p->GetData() + currCount, m_mpegPesParser->basicVideoInfo.pps, m_mpegPesParser->basicVideoInfo.ppslen);
+                }
+                if (m_mpegPesParser->basicVideoInfo.vpslen > 0)
+                {
+                  //Insert VPS NAL
+                  size_t currCount = p->GetCount();
+                  p->SetCount (currCount + m_mpegPesParser->basicVideoInfo.vpslen);
+                  memcpy (p->GetData() + currCount, m_mpegPesParser->basicVideoInfo.vps, m_mpegPesParser->basicVideoInfo.vpslen);
+                }
+              }
             }
                                                    
             if (p->rtStart == Packet::INVALID_TIME)
@@ -2628,12 +2683,12 @@ void CDeMultiplexer::FillVideoHEVC(CTsHeader& header, byte* tsPacket)
             else
             {
               p = p4;
-            }
+            }           
           }
 
           if (Gop)
           {
-            m_mpegParserReset = true; //Reset next time around (so that it always searches for a full 'Gop' header)
+            // m_mpegParserReset = true; //Reset next time around (so that it always searches for a full 'Gop' header)
             if (!m_bFirstGopParsed)
             {
               m_bFirstGopParsed = true;
@@ -2652,39 +2707,58 @@ void CDeMultiplexer::FillVideoHEVC(CTsHeader& header, byte* tsPacket)
 
           if ((Gop || m_bFirstGopFound) && m_filter.GetVideoPin()->IsConnected())
           {
+            //Bitrate info calculation for MP player
+            m_byteRead = m_byteRead + p->GetCount();
+          	m_sampleTime = (float)timestamp.ToClock();
+          	float elapsedTime = m_sampleTime - m_sampleTimePrev;
+          	          
+          	if (elapsedTime > 5.0f)
+          	{
+              m_bitRate = ((float)m_byteRead*8.0f)/elapsedTime;
+          	  m_filter.OnBitRateChanged(m_bitRate);
+          	  m_sampleTimePrev = m_sampleTime;
+          	  m_byteRead = 0;
+          	  LOG_VID_BITRATE("HEVC: Rolling bitrate = %f", m_bitRate/1000000.0f);
+            }
+          	else if (elapsedTime < -0.5) 
+          	{
+          	  m_sampleTimePrev = m_sampleTime;
+            	m_byteRead = 0;
+          	}
+
             CRefTime Ref;
             CBuffer *pCurrentVideoBuffer = new CBuffer(p->GetCount());
             pCurrentVideoBuffer->Add(p->GetData(), p->GetCount());
             pCurrentVideoBuffer->SetPts(timestamp);   
             pCurrentVideoBuffer->SetPcr(m_duration.FirstStartPcr(),m_duration.MaxPcr());
             pCurrentVideoBuffer->MediaTime(Ref);
-            LOG_OUTSAMPLES_HEVC("...> HEVC: Store NALU type (length) = %d (%d), p->rtStart = %d, timestamp %f", (*(p->GetData()+4) & 0x1F), p->GetCount(), (int)p->rtStart, timestamp.ToClock()) ;
+            LOG_OUTSAMPLES_HEVC("...> HEVC: Store NALU type (length) = %d (%d), p->rtStart = %d, timestamp %f, IRAP = %d", (*(p->GetData()+4) & 0x1F), p->GetCount(), (int)p->rtStart, timestamp.ToClock(), foundIRAP) ;
             // Must use p->rtStart as CPcr is UINT64 and INVALID_TIME is LONGLONG
             // Too risky to change CPcr implementation at this time 
             if(p->rtStart != Packet::INVALID_TIME)
             {
-              if (Gop && m_bFirstGopFound && !m_bSecondGopFound)
+              if (foundIRAP && m_bFirstGopFound && !m_bSecondGopFound)
               {
                 m_bSecondGopFound=true;
-                LogDebug("  HEVC 2nd GOP found %f ", Ref.Millisecs()/1000.0f);
+                LogDebug("  HEVC: 2nd random access frame found %f ", Ref.Millisecs()/1000.0f);
               }
               if (Gop && !m_bFirstGopFound)
               {
                 m_bFirstGopFound=true;
-                LogDebug("  HEVC I-FRAME found %f ", Ref.Millisecs()/1000.0f);
+                LogDebug("  HEVC: SPS/PPS/VPS found %f ", Ref.Millisecs()/1000.0f);
                 m_LastValidFrameCount=0;
               }
               if (Ref < m_FirstVideoSample) m_FirstVideoSample = Ref;
               if (Ref > m_LastVideoSample) m_LastVideoSample = Ref;
-              if (m_bFirstGopFound && !m_bFrame0Found && m_LastValidFrameCount>=5 /*(frame_count==0)*/)
+              if (m_bFirstGopFound && foundIRAP && !m_bFrame0Found)
               {
-                LogDebug("  HEVC First supposed '0' frame found. %f ", m_FirstVideoSample.Millisecs()/1000.0f);
+                LogDebug("  HEVC: First random access frame found. RefFVS = %f, Ref = %f, IRAP = %d ", m_FirstVideoSample.Millisecs()/1000.0f, Ref.Millisecs()/1000.0f, foundIRAP);
                 m_bFrame0Found = true;
               }
               m_LastValidFrameCount++;
             }
 
-            pCurrentVideoBuffer->SetFrameType(Gop? 'I':'?');
+            pCurrentVideoBuffer->SetFrameType(foundIRAP ? 'I':'?');
             pCurrentVideoBuffer->SetFrameCount(0);
             pCurrentVideoBuffer->SetVideoServiceType(m_pids.videoPids[0].VideoServiceType);
             if (m_bSetVideoDiscontinuity)
@@ -2713,7 +2787,6 @@ void CDeMultiplexer::FillVideoHEVC(CTsHeader& header, byte* tsPacket)
                 else if (Delta < 0.2)
                 {
                   LogDebug("Demux : Video to render too late= %03.3f Sec, FileReadLatency: %d ms", Delta, m_fileReadLatency) ;
-                  //  m_filter.m_bRenderingClockTooFast=true;
                   _InterlockedIncrement(&m_AVDataLowCount);   
                   m_MinAudioDelta+=1.0;
                   m_MinVideoDelta+=1.0;                
@@ -2730,7 +2803,7 @@ void CDeMultiplexer::FillVideoHEVC(CTsHeader& header, byte* tsPacket)
               CAutoLock lock (&m_sectionVideo);
               if (m_vecVideoBuffers.size()<=MAX_VID_BUF_SIZE)
               {
-                if (m_bFirstGopFound)
+                if (m_bFrame0Found) //if (m_bFirstGopFound)
                 {                  
                   // ownership is transfered to vector
                   m_vecVideoBuffers.push_back(pCurrentVideoBuffer);
@@ -2773,7 +2846,7 @@ void CDeMultiplexer::FillVideoHEVC(CTsHeader& header, byte* tsPacket)
         //m_p->rtStart = Packet::INVALID_TIME;
       }
 
-      //LogDebug(".......> Store NALU type (length) = %d (%d), p2->rtStart = %d", (*(p2->GetData()+4) & 0x1F), p2->GetCount(), (int)p2->rtStart) ;
+      LOG_OUTSAMPLES_HEVC(".......> HEVC: Store NALU type (length) = %d (%d), p2->rtStart = %d, newtimestamp = %d", (*(p2->GetData()+4) & 0x7e)>>1, p2->GetCount(), (int)p2->rtStart, isNewTimestamp) ;
       m_pl.AddTail(p2);
       m_isNewNALUTimestamp = isNewTimestamp;
       isNewTimestamp = false;
@@ -2828,18 +2901,6 @@ void CDeMultiplexer::FillVideoH264(CTsHeader& header, byte* tsPacket)
   if (headerlen < 188)
   {            
     int dataLen = 188-headerlen;
-
-  	m_byteRead = m_byteRead + dataLen;
-  	m_sampleTime = GET_TIME_NOW();
-  	DWORD elapsedTime = m_sampleTime - m_sampleTimePrev;
-
-  	if (elapsedTime >= 5000)
-  	{
-      m_bitRate = (float)m_byteRead*8*1000/elapsedTime;
-  	  m_filter.OnBitRateChanged(m_bitRate);
-  	  m_sampleTimePrev = m_sampleTime;
-  	  m_byteRead = 0;
-    }
 
     p->SetCount(dataLen);
     p->SetData(&tsPacket[headerlen],dataLen);
@@ -3072,7 +3133,11 @@ void CDeMultiplexer::FillVideoH264(CTsHeader& header, byte* tsPacket)
       
       memcpy (p2->GetData(), &dwNalLength, sizeof(dwNalLength));
       memcpy (p2->GetData()+sizeof(dwNalLength), (start+3), size);
-      LOG_SAMPLES("Input p2 NALU Type: %d (%d), m_p->rtStart: %d, m_p->rtPrevStart: %d", (*(p2->GetData()+4)&0x1f), p2->GetCount(), (int)m_p->rtStart, (int)m_p->rtPrevStart);
+      
+      //Get the NAL ID
+      char nalIDp2 = (*(p2->GetData()+4)&0x9f); //Note the 'forbidden_zero_bit' is included i.e. it must be zero for a valid NAL ID
+
+      LOG_SAMPLES("Input p2 NALU Type: %d (%d), m_p->rtStart: %d, m_p->rtPrevStart: %d", nalIDp2, p2->GetCount(), (int)m_p->rtStart, (int)m_p->rtPrevStart);
       
       if ((m_p->rtStart != m_p->rtPrevStart) && (m_p->rtPrevStart != Packet::INVALID_TIME))
       {
@@ -3089,27 +3154,19 @@ void CDeMultiplexer::FillVideoH264(CTsHeader& header, byte* tsPacket)
 
       //Decide if we should transfer NALU packets to output sample
       
-      if((*(p2->GetData()+4)&0x1f) == 0x09) 
+      if(nalIDp2 == H264_NAL_AUD) 
       {
         m_fHasAccessUnitDelimiters = true;
       }
-
-//      if(*(p2->GetData()+4) == 0x06 && *(p2->GetData()+5) == 0x04) 
-//      {
-//        LogDebug("demux: p2 H264 SEI CC 0x%x, 0x%x, 0x%x, 0x%x, 0x%x, 0x%x, 0x%x, 0x%x, 0x%x, 0x%x, 0x%x, 0x%x", 
-//                                                                                      *(p2->GetData()+6), *(p2->GetData()+7), *(p2->GetData()+8), *(p2->GetData()+9), 
-//                                                                                      *(p2->GetData()+10), *(p2->GetData()+11), *(p2->GetData()+12), *(p2->GetData()+13),
-//                                                                                      *(p2->GetData()+14), *(p2->GetData()+15), *(p2->GetData()+16), *(p2->GetData()+17));
-//      }
         
-      if(((*(p2->GetData()+4)&0x1f) == 0x09) || (!m_fHasAccessUnitDelimiters && m_isNewNALUTimestamp))
+      if((nalIDp2 == H264_NAL_AUD) || (!m_fHasAccessUnitDelimiters && m_isNewNALUTimestamp))
       {
         m_isNewNALUTimestamp = false;
         if ((m_pl.GetCount()>0) && m_mVideoValidPES)
         {
           //Transfer NALU packets to output sample
           bool Gop = false;
-          char nalID = 0;
+          bool foundIRAP = false;
           
           //Copy available NALUs into new packet 'p' (for the next video buffer)
           CAutoPtr<Packet> p(new Packet());
@@ -3138,11 +3195,65 @@ void CDeMultiplexer::FillVideoH264(CTsHeader& header, byte* tsPacket)
             //  iFrameScanner.ProcessNALU(p2);
             LOG_OUTSAMPLES("Output p4 NALU Type: %d (%d), rtStart: %d", p4->GetAt(4)&0x1f, p4->GetCount(), (int)p->rtStart);
             
-            nalID = p4->GetAt(4);
-            if ((((nalID & 0x9f) == 0x07) || ((nalID & 0x9f) == 0x08)) && ((nalID & 0x60) != 0)) //Process SPS & PPS data
+            char nalIDp4     = p4->GetAt(4) & 0x9f; //Note the 'forbidden_zero_bit' is included i.e. it must be zero for a valid NAL ID
+            char nalRefIdcp4 = (p4->GetAt(4) & 0x60) >> 5;
+            //LogDebug("H264: All NAL, type = %d, nalRefIDC = %d, nextByte = 0x%x", nalIDp4, nalRefIdcp4, p4->GetAt(5));
+            
+            if (((nalIDp4 == H264_NAL_SPS) || (nalIDp4 == H264_NAL_PPS)) && (nalRefIdcp4 != 0)) //Process SPS & PPS data
             {
-              Gop = m_mpegPesParser->OnTsPacket(p4->GetData(), p4->GetCount(), 2, m_mpegParserReset);
+              Gop = m_mpegPesParser->OnTsPacket(p4->GetData(), p4->GetCount(), VIDEO_STREAM_TYPE_H264, m_mpegParserReset);
               m_mpegParserReset = false;
+              
+              if (Gop && !m_bFirstGopParsed)
+              {
+                m_bFirstGopParsed = true;
+                LogDebug("DeMultiplexer: H264: First Gop after new PAT, %dx%d @ %d:%d, %.3fHz %s",m_mpegPesParser->basicVideoInfo.width,m_mpegPesParser->basicVideoInfo.height,m_mpegPesParser->basicVideoInfo.arx,m_mpegPesParser->basicVideoInfo.ary,(float)m_mpegPesParser->basicVideoInfo.fps, m_mpegPesParser->basicVideoInfo.isInterlaced ? "interlaced":"progressive");
+              }
+            }
+
+            //if(nalIDp4 == H264_NAL_SEI && p4->GetAt(5) == 0x06) //recovery_point SEI
+            //{
+            //  LogDebug("H264: recovery_point SEI");
+            //}
+            //
+            //if(nalIDp4 == H264_NAL_SEI && p4->GetAt(5) == 0x04) //closed-caption SEI
+            //{
+            //  LogDebug("demux: p2 H264 SEI CC");
+            //}
+
+            //Find random-access entry points in the stream - check nalID, nal_ref_idc, first_mb_in_slice and slice-type values
+            if (((nalIDp4 == H264_NAL_IDR) || (nalIDp4 == H264_NAL_SLICE)) && (nalRefIdcp4 != 0) && 
+              ((p4->GetAt(5) & 0xF0) == 0xB0 ||  // first_mb_in_slice=0 and  I-slice type 2
+               (p4->GetAt(5) & 0xFC) == 0x94 ||  // first_mb_in_slice=0 and SI-slice type 4
+               (p4->GetAt(5) & 0xFF) == 0x88 ||  // first_mb_in_slice=0 and  I-slice type 7
+               (p4->GetAt(5) & 0xFF) == 0x8A )   // first_mb_in_slice=0 and SI-slice type 9
+             )
+            {
+              foundIRAP = true;
+              //LogDebug("H264: Random access point, nalID = %d, nalRefIdc = %d, slice_header = 0x%x", nalIDp4, nalRefIdcp4, p4->GetAt(5));
+              
+              if (!m_bFrame0Found && m_bFirstGopFound)  //First random access point after stream start or seek - add SPS/PPS
+              {
+                LogDebug("H264: Random access point, nalID = %d, nalRefIdc = %d, slice_header = 0x%x, SPS(%I64d), PPS(%I64d)", nalIDp4, nalRefIdcp4, p4->GetAt(5), m_mpegPesParser->basicVideoInfo.spslen, m_mpegPesParser->basicVideoInfo.ppslen);
+                if (m_mpegPesParser->basicVideoInfo.spslen > 0)
+                {
+                  //Insert SPS NAL
+                  size_t currCount = p->GetCount();                  
+                  DWORD dwNalLength = _byteswap_ulong(m_mpegPesParser->basicVideoInfo.spslen);  //dwNalLength is big-endian format
+                  p->SetCount (currCount + m_mpegPesParser->basicVideoInfo.spslen + sizeof(dwNalLength));                  
+                  memcpy (p->GetData() + currCount, &dwNalLength, sizeof(dwNalLength)); //Insert NAL length                  
+                  memcpy (p->GetData() + currCount + sizeof(dwNalLength), m_mpegPesParser->basicVideoInfo.sps, m_mpegPesParser->basicVideoInfo.spslen);
+                }
+                if (m_mpegPesParser->basicVideoInfo.ppslen > 0)
+                {
+                  //Insert PPS NAL
+                  size_t currCount = p->GetCount();                  
+                  DWORD dwNalLength = _byteswap_ulong(m_mpegPesParser->basicVideoInfo.ppslen);  //dwNalLength is big-endian format
+                  p->SetCount (currCount + m_mpegPesParser->basicVideoInfo.ppslen + sizeof(dwNalLength));                  
+                  memcpy (p->GetData() + currCount, &dwNalLength, sizeof(dwNalLength)); //Insert NAL length                  
+                  memcpy (p->GetData() + currCount + sizeof(dwNalLength), m_mpegPesParser->basicVideoInfo.pps, m_mpegPesParser->basicVideoInfo.ppslen);
+                }
+              }              
             }
                                                    
             if (p->rtStart == Packet::INVALID_TIME)
@@ -3160,16 +3271,6 @@ void CDeMultiplexer::FillVideoH264(CTsHeader& header, byte* tsPacket)
             }
           }
 
-          if (Gop)
-          {
-            m_mpegParserReset = true; //Reset next time around (so that it always searches for a full 'Gop' header)
-            if (!m_bFirstGopParsed)
-            {
-              m_bFirstGopParsed = true;
-              LogDebug("DeMultiplexer: First Gop after new PAT, %dx%d @ %d:%d, %.3fHz %s",m_mpegPesParser->basicVideoInfo.width,m_mpegPesParser->basicVideoInfo.height,m_mpegPesParser->basicVideoInfo.arx,m_mpegPesParser->basicVideoInfo.ary,(float)m_mpegPesParser->basicVideoInfo.fps, m_mpegPesParser->basicVideoInfo.isInterlaced ? "interlaced":"progressive");
-            }
-          }
-
           CPcr timestamp;
           if(p->rtStart != Packet::INVALID_TIME )
           {
@@ -3181,6 +3282,25 @@ void CDeMultiplexer::FillVideoH264(CTsHeader& header, byte* tsPacket)
 
           if ((Gop || m_bFirstGopFound) && m_filter.GetVideoPin()->IsConnected())
           {
+            //Bitrate info calculation for MP player
+            m_byteRead = m_byteRead + p->GetCount();
+          	m_sampleTime = (float)timestamp.ToClock();
+          	float elapsedTime = m_sampleTime - m_sampleTimePrev;
+          
+          	if (elapsedTime > 5.0f)
+          	{
+              m_bitRate = ((float)m_byteRead*8.0f)/elapsedTime;
+          	  m_filter.OnBitRateChanged(m_bitRate);
+          	  m_sampleTimePrev = m_sampleTime;
+          	  m_byteRead = 0;
+          	  LOG_VID_BITRATE("H264: Rolling bitrate = %f", m_bitRate/1000000.0f);
+            }
+          	else if (elapsedTime < -0.5) 
+          	{
+          	  m_sampleTimePrev = m_sampleTime;
+            	m_byteRead = 0;
+          	}
+
             CRefTime Ref;
             CBuffer *pCurrentVideoBuffer = new CBuffer(p->GetCount());
             pCurrentVideoBuffer->Add(p->GetData(), p->GetCount());
@@ -3192,28 +3312,28 @@ void CDeMultiplexer::FillVideoH264(CTsHeader& header, byte* tsPacket)
             // Too risky to change CPcr implementation at this time 
             if(p->rtStart != Packet::INVALID_TIME)
             {
-              if (Gop && m_bFirstGopFound && !m_bSecondGopFound)
+              if (foundIRAP && m_bFirstGopFound && !m_bSecondGopFound)
               {
                 m_bSecondGopFound=true;
-                LogDebug("  H264 2nd GOP found %f ", Ref.Millisecs()/1000.0f);
+                LogDebug("  H264: 2nd random access frame found %f", Ref.Millisecs()/1000.0f);
               }
               if (Gop && !m_bFirstGopFound)
               {
                 m_bFirstGopFound=true;
-                LogDebug("  H264 I-FRAME found %f ", Ref.Millisecs()/1000.0f);
+                LogDebug("  H264: SPS/PPS found %f", Ref.Millisecs()/1000.0f);
                 m_LastValidFrameCount=0;
               }
               if (Ref < m_FirstVideoSample) m_FirstVideoSample = Ref;
               if (Ref > m_LastVideoSample) m_LastVideoSample = Ref;
-              if (m_bFirstGopFound && !m_bFrame0Found && m_LastValidFrameCount>=5 /*(frame_count==0)*/)
+              if (m_bFirstGopFound && foundIRAP && !m_bFrame0Found)  /*&& m_LastValidFrameCount>=5*/ /*(frame_count==0)*/
               {
-                LogDebug("  H264 First supposed '0' frame found. %f ", m_FirstVideoSample.Millisecs()/1000.0f);
+                LogDebug("  H264: First random access frame found. RefFVS = %f, Ref = %f", m_FirstVideoSample.Millisecs()/1000.0f, Ref.Millisecs()/1000.0f);
                 m_bFrame0Found = true;
               }
               m_LastValidFrameCount++;
             }
 
-            pCurrentVideoBuffer->SetFrameType(Gop? 'I':'?');
+            pCurrentVideoBuffer->SetFrameType(foundIRAP ? 'I':'?');
             pCurrentVideoBuffer->SetFrameCount(0);
             pCurrentVideoBuffer->SetVideoServiceType(m_pids.videoPids[0].VideoServiceType);
             if (m_bSetVideoDiscontinuity)
@@ -3242,7 +3362,6 @@ void CDeMultiplexer::FillVideoH264(CTsHeader& header, byte* tsPacket)
                 else if (Delta < 0.2)
                 {
                   LogDebug("Demux : Video to render too late= %03.3f Sec, FileReadLatency: %d ms", Delta, m_fileReadLatency) ;
-                  //  m_filter.m_bRenderingClockTooFast=true;
                   _InterlockedIncrement(&m_AVDataLowCount);   
                   m_MinAudioDelta+=1.0;
                   m_MinVideoDelta+=1.0;                
@@ -3259,7 +3378,7 @@ void CDeMultiplexer::FillVideoH264(CTsHeader& header, byte* tsPacket)
               CAutoLock lock (&m_sectionVideo);
               if (m_vecVideoBuffers.size()<=MAX_VID_BUF_SIZE)
               {
-                if (m_bFirstGopFound)
+                if (m_bFrame0Found) // (m_bFirstGopFound)
                 {                  
                   // ownership is transfered to vector
                   m_vecVideoBuffers.push_back(pCurrentVideoBuffer);
@@ -3365,18 +3484,6 @@ void CDeMultiplexer::FillVideoMPEG2(CTsHeader& header, byte* tsPacket)
   if (headerlen < 188)
   {
     int dataLen = 188-headerlen;
-
-  	m_byteRead = m_byteRead + dataLen;
-  	m_sampleTime = GET_TIME_NOW();
-  	DWORD elapsedTime = m_sampleTime - m_sampleTimePrev;
-  
-  	if (elapsedTime >= 5000)
-  	{
-      m_bitRate = (float)m_byteRead*8*1000/elapsedTime;
-  	  m_filter.OnBitRateChanged(m_bitRate);
-  	  m_sampleTimePrev = m_sampleTime;
-  	  m_byteRead = 0;
-    }
 
     p->SetCount(dataLen);
     p->SetData(&tsPacket[headerlen],dataLen);
@@ -3596,7 +3703,7 @@ void CDeMultiplexer::FillVideoMPEG2(CTsHeader& header, byte* tsPacket)
 
             // LogDebug("frame len %d decoded PTS %f (framerate %f), %c(%d)", p->GetCount(), m_CurrentVideoPts.IsValid ? (float)m_CurrentVideoPts.ToClock() : 0.0f,(float)m_curFramePeriod,frame_type,frame_count);
 
-            bool Gop = m_mpegPesParser->OnTsPacket(p->GetData(), p->GetCount(), 1, m_mpegParserReset);
+            bool Gop = m_mpegPesParser->OnTsPacket(p->GetData(), p->GetCount(), VIDEO_STREAM_TYPE_MPEG2, m_mpegParserReset);
             if (Gop)
             {
               m_mpegParserReset = true; //Reset next time around (so that it always searches for a full 'Gop' header)
@@ -3621,9 +3728,6 @@ void CDeMultiplexer::FillVideoMPEG2(CTsHeader& header, byte* tsPacket)
 
             if ((Gop || m_bFirstGopFound) && m_filter.GetVideoPin()->IsConnected())
             {
-              CRefTime Ref;
-              CBuffer *pCurrentVideoBuffer = new CBuffer(p->GetCount());
-              pCurrentVideoBuffer->Add(p->GetData(), p->GetCount());
               if (m_CurrentVideoPts.IsValid)
               {                                                     // Timestamp Ok.
                 m_LastValidFrameCount=frame_count;
@@ -3638,6 +3742,29 @@ void CDeMultiplexer::FillVideoMPEG2(CTsHeader& header, byte* tsPacket)
                   m_CurrentVideoPts.IsValid=true;
                 }
               }
+
+              //Bitrate info calculation for MP player
+              m_byteRead = m_byteRead + p->GetCount();
+            	m_sampleTime = (float)m_CurrentVideoPts.ToClock();
+            	float elapsedTime = m_sampleTime - m_sampleTimePrev;
+            
+            	if (elapsedTime > 5.0f)
+            	{
+                m_bitRate = ((float)m_byteRead*8.0f)/elapsedTime;
+            	  m_filter.OnBitRateChanged(m_bitRate);
+            	  m_sampleTimePrev = m_sampleTime;
+            	  m_byteRead = 0;
+          	    LOG_VID_BITRATE("MPEG2: Rolling bitrate = %f", m_bitRate/1000000.0f);
+              }
+            	else if (elapsedTime < -0.5) 
+            	{
+            	  m_sampleTimePrev = m_sampleTime;
+            	  m_byteRead = 0;
+            	}
+
+              CRefTime Ref;
+              CBuffer *pCurrentVideoBuffer = new CBuffer(p->GetCount());
+              pCurrentVideoBuffer->Add(p->GetData(), p->GetCount());
               pCurrentVideoBuffer->SetPts(m_CurrentVideoPts);   
               pCurrentVideoBuffer->SetPcr(m_duration.FirstStartPcr(),m_duration.MaxPcr());
               pCurrentVideoBuffer->MediaTime(Ref);
@@ -3687,7 +3814,6 @@ void CDeMultiplexer::FillVideoMPEG2(CTsHeader& header, byte* tsPacket)
                   else if (Delta < 0.2)
                   {
                     LogDebug("Demux : Video to render too late= %03.3f Sec, FileReadLatency: %d ms", Delta, m_fileReadLatency) ;
-                    //  m_filter.m_bRenderingClockTooFast=true;
                     _InterlockedIncrement(&m_AVDataLowCount);   
                     m_MinAudioDelta+=1.0;
                     m_MinVideoDelta+=1.0;                
@@ -3704,7 +3830,7 @@ void CDeMultiplexer::FillVideoMPEG2(CTsHeader& header, byte* tsPacket)
                 CAutoLock lock (&m_sectionVideo);
                 if (m_vecVideoBuffers.size()<=MAX_VID_BUF_SIZE)
                 {
-                  if (m_bFirstGopFound)
+                  if (m_bFrame0Found) // (m_bFirstGopFound)
                   {
                     // ownership is transfered to vector
                     m_vecVideoBuffers.push_back(pCurrentVideoBuffer);
@@ -3995,7 +4121,7 @@ void CDeMultiplexer::OnNewChannel(CChannelInfo& info)
     m_bSetAudioDiscontinuity=true;
     m_bSetVideoDiscontinuity=true;
     //Flushing is delegated to CDeMultiplexer::ThreadProc()
-    DelegatedFlush(true, false);
+    DelegatedFlush(true, true);
   }
   else
   {
@@ -4507,7 +4633,7 @@ void CDeMultiplexer::ThreadProc()
   
         LogDebug("CDeMultiplexer::ThreadProc - Flush");     
         //Flush the internal data
-        Flush(true);
+        Flush(true, m_bFlushDelegated && !m_bFlushDelgNow);
         m_bFlushDelgNow = false;
         
         sizeRead = 0;

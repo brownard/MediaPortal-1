@@ -59,7 +59,7 @@ bool CMpegPesParser::ParseVideo(byte* tsPacket,int vidType,bool reset)
 	bool parsed=false;
   __int64 framesize=hdrParser.GetSize();
 
-	if (vidType == 1) // mpeg2
+	if (vidType == VIDEO_STREAM_TYPE_MPEG2)
 	{
 		seqhdr seq;
 		if (hdrParser.Read(seq,framesize,&pmt,reset))
@@ -77,12 +77,12 @@ bool CMpegPesParser::ParseVideo(byte* tsPacket,int vidType,bool reset)
 				basicVideoInfo.isInterlaced=1;
 			else
 				basicVideoInfo.isInterlaced=0;
-			basicVideoInfo.streamType=1; //MPEG2
+			basicVideoInfo.streamType=VIDEO_STREAM_TYPE_MPEG2;
 			basicVideoInfo.isValid=true;
 			parsed=true;
 		}
 	}
-	else if (vidType == 2) //AVC/H264
+	else if (vidType == VIDEO_STREAM_TYPE_H264)
 	{
 	  // avchdr avc;
 		if (hdrParser.Read(avc,framesize,&pmt,reset))
@@ -100,14 +100,21 @@ bool CMpegPesParser::ParseVideo(byte* tsPacket,int vidType,bool reset)
 				basicVideoInfo.isInterlaced=1;
 			else
 				basicVideoInfo.isInterlaced=0;
-			basicVideoInfo.streamType=2; // H264
+			basicVideoInfo.streamType=VIDEO_STREAM_TYPE_H264;
 			basicVideoInfo.isValid=true;
+
+		  basicVideoInfo.sps = avc.sps;
+		  basicVideoInfo.pps = avc.pps;
+		  basicVideoInfo.spslen = avc.spslen;
+		  basicVideoInfo.ppslen = avc.ppslen;
+			
+		  //LogDebug("MpegPesParser: H264: SPS=%I64d, PPS=%I64d", avc.spslen, avc.ppslen);
+			
 			parsed=true;
 		}
 	}
-	else if (vidType == 3) //HEVC
+	else if (vidType == VIDEO_STREAM_TYPE_HEVC)
 	{
-	  // avchdr avc;
 		if (hdrParser.Read(hevc,framesize,&pmt,reset))
 		{
 			//hdrParser.DumpHevcHeader(hevc);
@@ -123,8 +130,18 @@ bool CMpegPesParser::ParseVideo(byte* tsPacket,int vidType,bool reset)
 				basicVideoInfo.isInterlaced=1;
 			else
 				basicVideoInfo.isInterlaced=0;
-			basicVideoInfo.streamType=3; // HEVC
+			basicVideoInfo.streamType=VIDEO_STREAM_TYPE_HEVC;
 			basicVideoInfo.isValid=true;
+
+		  basicVideoInfo.sps = hevc.sps;
+		  basicVideoInfo.pps = hevc.pps;
+		  basicVideoInfo.vps = hevc.vps;
+		  basicVideoInfo.spslen = hevc.spslen;
+		  basicVideoInfo.ppslen = hevc.ppslen;
+		  basicVideoInfo.vpslen = hevc.vpslen;
+			
+		  //LogDebug("ParseVideo: SPS=%I64d, PPS=%I64d, VPS=%I64d",hevc.spslen, hevc.ppslen, hevc.vpslen);
+			
 			parsed=true;
 		}
 	}
@@ -260,6 +277,13 @@ bool CMpegPesParser::ParseAudio(byte* audioPacket, int streamType, bool reset)
   	if (streamType == SERVICE_TYPE_AUDIO_AC3 ||
   	    streamType == SERVICE_TYPE_AUDIO_DD_PLUS ||
   	    streamType == SERVICE_TYPE_AUDIO_E_AC3)
+  	{
+      basicAudioInfo.channels=6;
+  	} 
+  	 	
+  	if (streamType == SERVICE_TYPE_AUDIO_DTS ||   
+  	    streamType == SERVICE_TYPE_AUDIO_DTS_HD ||
+  	    streamType == SERVICE_TYPE_AUDIO_DTS_HDMA)
   	{
       basicAudioInfo.channels=6;
   	}  	

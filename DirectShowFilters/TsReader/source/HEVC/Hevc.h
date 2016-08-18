@@ -73,6 +73,16 @@ namespace HEVC
 			width = 0;
 			height = 0;
 		}
+		
+		~hevchdr()
+		{
+		  if (sps != NULL) free(sps);
+		  if (pps != NULL) free(pps);
+		  if (vps != NULL) free(vps);
+		  sps = NULL;
+		  pps = NULL;
+		  vps = NULL;
+		}
 	};
 
   enum NALUnitType 
