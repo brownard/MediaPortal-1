@@ -978,11 +978,18 @@ STDMETHODIMP CMpTs::TimeShiftSetTimeShiftingFileNameW( int handle, wchar_t* pwsz
   pChannel->m_pTimeShifting->SetFileNameW(pwszFileName);
   return S_OK;
 }
+
 STDMETHODIMP CMpTs::TimeShiftStart( int handle )
 {
   CAutoLock lock(&m_channelLock);
   CTsChannel* pChannel=GetTsChannel(handle);
   if (pChannel==NULL) return S_OK;
+  //Added to open file for custom PID grabber
+  if(pChannel->b_grabCustomPackets)
+  {
+  pChannel->m_pCustomDataGrabber->OpenFile();
+  LogDebug("Custom Data grabber file created");
+  }
   if (b_dumpRawPackets)
   {
 	m_pRawPacketWriter->OpenFile();
@@ -999,6 +1006,13 @@ STDMETHODIMP CMpTs::TimeShiftStop( int handle )
   CAutoLock lock(&m_channelLock);
   CTsChannel* pChannel=GetTsChannel(handle);
   if (pChannel==NULL) return S_OK;
+
+  if(pChannel->b_grabCustomPackets)
+  {
+  pChannel->m_pCustomDataGrabber->Stop();
+  LogDebug("Custom file closed");
+  }
+
   if (b_dumpRawPackets)
   {
 	  m_pRawPacketWriter->CloseFile();
@@ -1013,6 +1027,12 @@ STDMETHODIMP CMpTs:: TimeShiftReset( int handle )
   CAutoLock lock(&m_channelLock);
   CTsChannel* pChannel=GetTsChannel(handle);
   if (pChannel==NULL) return S_OK;
+  if(pChannel->b_grabCustomPackets)
+  {
+    pChannel->m_pCustomDataGrabber->Stop();
+    pChannel->m_pCustomDataGrabber->OpenFile();
+    LogDebug("custom Data Grabber file reset");
+  }
   if (b_dumpRawPackets)
   {
     m_pRawPacketWriter->CloseFile();
@@ -1179,4 +1199,22 @@ STDMETHODIMP CMpTs::TimeShiftSetChannelType(int handle, int channelType)
 	pChannel->m_pRecorder->SetChannelType(channelType);
 	pChannel->m_pTimeShifting->SetChannelType(channelType);
 	return S_OK;
+}
+
+STDMETHODIMP CMpTs::AddPidtoCustomData(int handle, int pid)
+{
+   CTsChannel* pChannel=GetTsChannel(handle);
+   if (pChannel==NULL) return S_OK;
+   LogDebug("Added CustomPid %x",pid);
+   pChannel->m_pCustomDataGrabber->AddSectionDecoder(pid);
+   return S_OK;
+}
+ 
+STDMETHODIMP CMpTs::SetCustomDataFilename(int handle, wchar_t* pwszFileName)
+ {
+   CTsChannel* pChannel=GetTsChannel(handle);
+   if (pChannel==NULL) return S_OK;
+   pChannel->m_pCustomDataGrabber->SetFileName(pwszFileName);
+   pChannel->b_grabCustomPackets = true;
+   return S_OK;
 }
