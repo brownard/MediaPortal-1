@@ -2080,7 +2080,7 @@ namespace MediaPortal.Player
             }
             DirectShowUtil.ReleaseComObject(pinFromOut); pinFromOut = null;
           }
-          else
+          else if (GUIGraphicsContext.VideoRenderer == GUIGraphicsContext.VideoRendererType.madVR)
           {
             if (selection == "Video")
             {
@@ -2127,6 +2127,12 @@ namespace MediaPortal.Player
               _graphBuilder.RemoveFilter(pInfo.filter);
               Log.Debug("TSReaderPlayer: UpdateFilters Remove filter - {0}", fInfo.achName);
             }
+          }
+          else
+          {
+            DirectShowUtil.DisconnectAllPins(_graphBuilder, pInfo.filter);
+            _graphBuilder.RemoveFilter(pInfo.filter);
+            Log.Debug("TSReaderPlayer: UpdateFilters Remove filter - {0}", fInfo.achName);
           }
           DsUtils.FreePinInfo(pInfo);
           DirectShowUtil.ReleaseComObject(fInfo.pGraph);
