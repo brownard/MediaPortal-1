@@ -668,7 +668,7 @@ namespace MediaPortal.DeployTool
       // All official releases has "0" as build number
       // but 1.1.0 RC2 that was 25546
       //
-      return (build == "0" || build == "25546");
+        return true;//(build == "0" || build == "25546");
     }
 
     public static Version GetPackageVersion(string type)
