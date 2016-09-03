@@ -381,9 +381,7 @@
     <EmbeddedResource Include="create_mysql_database.sql" />
     <EmbeddedResource Include="create_sqlserver_database.sql" />
     <EmbeddedResource Include="SetupTv.exe.manifest" />
-    <Compile Include="SearchSHOUTcast.cs">
-      <SubType>Form</SubType>
-    </Compile>
+    <Compile Include="SearchSHOUTcast.cs" />
     <Compile Include="Sections\CardAnalog.cs">
       <SubType>UserControl</SubType>
     </Compile>
@@ -769,8 +767,8 @@
     <EmbeddedResource Include="60_upgrade_sqlserver_database.sql" />
     <EmbeddedResource Include="61_upgrade_mysql_database.sql" />
     <EmbeddedResource Include="61_upgrade_sqlserver_database.sql" />
-    <EmbeddedResource Include="62_upgrade_mysql_database.sql" />
-    <EmbeddedResource Include="62_upgrade_sqlserver_database.sql" />
+    <EmbeddedResource Include="custom_data_grabber_upgrade_mysql_database.sql" />
+    <EmbeddedResource Include="custom_data_grabber_upgrade_sqlserver_database.sql" />
     <None Include="images\icon.down.png" />
     <Content Include="images\icon.mpConfig.ico" />
     <Content Include="images\icon.radio_fta.png" />

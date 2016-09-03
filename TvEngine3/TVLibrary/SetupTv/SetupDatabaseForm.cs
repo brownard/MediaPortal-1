@@ -752,7 +752,117 @@ namespace SetupTv
         else
           break;
       }
+
+      bool updated = CheckCustomDataGrabberColumns("custom_data_grabber_upgrade");
       return true;
+    }
+
+    public bool CheckCustomDataGrabberColumns(string prefix)
+    {
+      Log.Info("- Checking Custom Data Grabber columns exist");
+      bool succeeded = true;
+      try
+      {
+        Assembly assm = Assembly.GetExecutingAssembly();
+        Stream stream = null;
+        switch (provider)
+        {
+          case ProviderType.SqlServer:
+            stream = assm.GetManifestResourceStream("SetupTv." + prefix + "_sqlserver_database.sql");
+            break;
+          case ProviderType.MySql:
+            stream = assm.GetManifestResourceStream("SetupTv." + prefix + "_mysql_database.sql");
+            break;
+        }
+
+        schemaName = tbDatabaseName.Text;
+        string[] CommandScript = null;
+        string sql = string.Empty;
+        if (stream != null)
+          using (StreamReader reader = new StreamReader(stream))
+            sql = reader.ReadToEnd();
+
+        switch (provider)
+        {
+          case ProviderType.SqlServer:
+            CommandScript = CleanMsSqlStatement(sql);
+            break;
+
+          case ProviderType.MySql:
+            CommandScript = CleanMySqlStatement(sql);
+            break;
+        }
+
+        // As the connection string sets the DB schema name we need to compose it after cleaning the statement.
+        string connectionString = ComposeConnectionString(tbServerHostName.Text, tbUserID.Text, tbPassword.Text, "",
+                                                          true, 30);
+        switch (provider)
+        {
+          case ProviderType.SqlServer:
+            using (SqlConnection connect = new SqlConnection(connectionString))
+            {
+              connect.Open();
+              if (CommandScript != null)
+                foreach (string SingleStmt in CommandScript)
+                {
+                  string SqlStmt = SingleStmt.Trim();
+                  if (!string.IsNullOrEmpty(SqlStmt) && !SqlStmt.StartsWith("--") && !SqlStmt.StartsWith("/*"))
+                  {
+                    try
+                    {
+                      using (SqlCommand cmd = new SqlCommand(SqlStmt, connect))
+                      {
+                        Log.Write("  Exec SQL: {0}", SqlStmt);
+                        cmd.CommandTimeout = 60;    // extra long 60 second timeout needed for long-running upgrade statements
+                        cmd.ExecuteNonQuery();
+                      }
+                    }
+                    catch (SqlException ex)
+                    {
+                      throw;
+                    }
+                  }
+                }
+            }
+            break;
+          case ProviderType.MySql:
+            using (MySqlConnection connect = new MySqlConnection(connectionString))
+            {
+              connect.Open();
+              if (CommandScript != null)
+                foreach (string SingleStmt in CommandScript)
+                {
+                  string SqlStmt = SingleStmt.Trim();
+                  if (!string.IsNullOrEmpty(SqlStmt) && !SqlStmt.StartsWith("--") && !SqlStmt.StartsWith("/*"))
+                  {
+                    try
+                    {
+                      using (MySqlCommand cmd = new MySqlCommand(SqlStmt, connect))
+                      {
+                        Log.Write("  Exec SQL: {0}", SqlStmt);
+                        cmd.CommandTimeout = 60;    // extra long 60 second timeout needed for long-running upgrade statements
+                        cmd.ExecuteNonQuery();
+                      }
+                    }
+                    catch (MySqlException ex)
+                    {
+                      throw;
+                    }
+                  }
+                }
+            }
+            break;
+        }
+        Log.Info("- Added Custom Data Grabber columns");
+      }
+      catch
+      {
+        //exception here means columns already exist;
+        Log.Info("- Custom Data Grabber columns elready exist");
+        succeeded = false;
+      }
+      SqlConnection.ClearAllPools();
+      return succeeded;
     }
 
     #endregion
