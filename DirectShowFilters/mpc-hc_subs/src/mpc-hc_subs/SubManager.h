@@ -27,12 +27,13 @@ public:
 	BOOL GetEnable();
 	void SetEnable(BOOL enable);
 	void SetTime(REFERENCE_TIME nsSampleTime);
-	void Render(int x, int y, int width, int height);
+	void Render(int x, int y, int width, int height, int xOffsetInPixels);
 	int GetDelay(); 
 	void SetDelay(int delay);
 	bool IsModified() { return m_subresync.IsModified(); };
 	void SaveToDisk();
 	void ToggleForcedOnly(bool onlyShowForcedSubs);
+  void SetDevice(IDirect3DDevice9* d3DDev);
 private:
 	friend class CTextPassThruInputPin;
 	friend class CTextPassThruFilter;
@@ -57,6 +58,7 @@ private:
 	CComPtr<IDirect3DDevice9> m_d3DDev;
 	CComQIPtr<ISubPicQueue> m_pSubPicQueue;
 	bool m_isSetTime;
+  bool m_bIsMadVR;
 	CCritSec m_csSubLock; 
 	
 	//list of subs (that are not coming from IAMStreamSelect filter, e.g. external sub files)

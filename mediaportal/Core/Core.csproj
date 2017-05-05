@@ -281,8 +281,8 @@
     <Reference Include="System.Xml">
       <Name>System.XML</Name>
     </Reference>
-    <Reference Include="taglib-sharp, Version=2.1.0.1, Culture=neutral, PublicKeyToken=db62eba44689b5b0, processorArchitecture=x86">
-      <HintPath>..\..\Packages\MediaPortal.TagLib.2.1.0.1\lib\net40\taglib-sharp.dll</HintPath>
+    <Reference Include="taglib-sharp, Version=2.1.0.2, Culture=neutral, PublicKeyToken=db62eba44689b5b0, processorArchitecture=x86">
+      <HintPath>..\..\Packages\MediaPortal.TagLib.2.1.0.2\lib\net40\taglib-sharp.dll</HintPath>
       <Private>True</Private>
     </Reference>
     <Reference Include="WindowsBase" />
@@ -388,6 +388,7 @@
     <Compile Include="Player\FFDShow\Interfaces\IffdshowBase.cs" />
     <Compile Include="Player\FFDShow\Interfaces\IffdshowDec.cs" />
     <Compile Include="Player\FFDShow\Interfaces\IffdshowDecVideo.cs" />
+    <Compile Include="Player\MadvrInterface.cs" />
     <Compile Include="Player\MediaInfoWrapper.cs" />
     <Compile Include="Player\PostProcessing\PostProcessingEngine.cs" />
     <Compile Include="Player\RefreshRateChanger.cs" />
@@ -1663,8 +1664,8 @@
   <PropertyGroup>
     <PreBuildEvent>
     </PreBuildEvent>
-    <PostBuildEvent>
-    </PostBuildEvent>
+    <PostBuildEvent>xcopy $(TargetDir)core.* $(SolutionDir)MediaPortal.Application\bin\$(ConfigurationName)\ /Y /T
+xcopy $(TargetDir)core.* $(SolutionDir)MediaPortal.Application\bin\$(ConfigurationName)\ /Y</PostBuildEvent>
   </PropertyGroup>
   <Target Name="EnsureNuGetPackageBuildImports" BeforeTargets="PrepareForBuild">
     <PropertyGroup>

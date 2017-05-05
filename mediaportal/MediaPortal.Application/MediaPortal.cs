@@ -141,6 +141,10 @@ public class MediaPortalApp : D3D, IRender
   private int                   _backupSizeHeight;
   private bool                  _usePrimaryScreen;
   private string                _screenDisplayName;
+  /// <summary>
+  /// Whether HID keyboard handler should be used instead of legacy keyboard handler.
+  /// </summary>
+  private bool                  _hidKeyboard = false;
 
   // ReSharper disable InconsistentNaming
   private const int WM_SYSCOMMAND            = 0x0112; // http://msdn.microsoft.com/en-us/library/windows/desktop/ms646360(v=vs.85).aspx
@@ -468,7 +472,7 @@ public class MediaPortalApp : D3D, IRender
   private static extern bool UnregisterPowerSettingNotification(IntPtr handle);
 
   [DllImport("user32.dll", SetLastError = true)]
-  private static extern bool SetProcessDPIAware();
+  private static extern int SetProcessDPIAware();
 
   [DllImport("user32.dll", SetLastError = true)]
   static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
@@ -480,6 +484,12 @@ public class MediaPortalApp : D3D, IRender
   [STAThread]
   public static void Main(string[] args)
   {
+    Log.Info("Starting deployer application");
+
+    Application.ThreadException += new System.Threading.ThreadExceptionEventHandler(Application_ThreadException);
+    AppDomain.CurrentDomain.UnhandledException += new UnhandledExceptionEventHandler(CurrentDomain_UnhandledException);
+    Application.ApplicationExit += new EventHandler(Application_ApplicationExit);
+
     using (Settings xmlreader = new MPSettings())
     {
       bool noAutoStartOnRDP = xmlreader.GetValueAsBool("general", "noautostartonrdp", false);
@@ -495,7 +505,8 @@ public class MediaPortalApp : D3D, IRender
 
     if (Environment.OSVersion.Version.Major >= 6)
     {
-      SetProcessDPIAware();
+      int succeeded = SetProcessDPIAware();
+      Log.Info("Main: MediaPortal SetProcessDPIAware {0}", succeeded);
     }
 
     #if !DEBUG
@@ -584,7 +595,21 @@ public class MediaPortalApp : D3D, IRender
         Win32API.ActivatePreviousInstance();
       }
     }
-   
+
+    // Check for a Configuration Instance running and don't allow Mediaportal to start
+    using (ProcessLock processLock = new ProcessLock(ConfigMutex))
+    {
+      if (processLock.AlreadyExists)
+      {
+        DialogResult dialogResult = MessageBox.Show(
+          "MediaPortal configuration has to be closed for starting MediaPortal",
+          "MediaPortal", MessageBoxButtons.OK, MessageBoxIcon.Question);
+
+        Log.Warn("Main: Configuration is running - start of MediaPortal aborted");
+        return;
+      }
+    }
+
     if (string.IsNullOrEmpty(_alternateConfig))
     {
       Log.BackupLogFiles();
@@ -985,6 +1010,12 @@ public class MediaPortalApp : D3D, IRender
               Application.Run(app);
               app.Focus();
             }
+            catch (ThreadStateException ex)
+            {
+              Log.Error(ex);
+              Log.Error("MediaPortal stopped due to thread exception {0} {1} {2}", ex.Message, ex.Source, ex.StackTrace);
+              _mpCrashed = true;
+            }
             catch (Exception ex)
             {
               Log.Error(ex);
@@ -1071,6 +1102,20 @@ public class MediaPortalApp : D3D, IRender
     Environment.Exit(0);
   }
 
+  static void Application_ApplicationExit(object sender, EventArgs e)
+  {
+    Log.Info("Application Closed");
+  }
+
+  static void CurrentDomain_UnhandledException(object sender, UnhandledExceptionEventArgs e)
+  {
+    //Log.Error(string.Format("*** UNHANDLED APPDOMAIN EXCEPTION ({0}) *****", e.IsTerminating ? "Terminating" : "Non-Terminating"), e.ExceptionObject as Exception);
+  }
+
+  static void Application_ThreadException(object sender, System.Threading.ThreadExceptionEventArgs e)
+  {
+    //Log.Error("*** UNHANDLED THREAD EXCEPTION *****", e.Exception);
+  }
 
   /// <summary>
   /// Disables the Splash Screen
@@ -1143,6 +1188,7 @@ public class MediaPortalApp : D3D, IRender
       screenDeviceId              = xmlreader.GetValueAsString("screenselector", "screendeviceid", "");
       _usePrimaryScreen           = xmlreader.GetValueAsBool("general", "useprimaryscreen", false);
       _screenDisplayName          = xmlreader.GetValueAsString("screenselector", "screendisplayname", "");
+      _hidKeyboard                = xmlreader.GetValueAsBool("remote", "HidKeyboard", false) && xmlreader.GetValueAsBool("remote", "HidEnabled", true);
     }
 
     if (ScreenNumberOverride >= 0)
@@ -1298,6 +1344,7 @@ public class MediaPortalApp : D3D, IRender
     GUIWindowManager.OnNewAction += OnAction;
     GUIWindowManager.Receivers += OnMessage;
     GUIWindowManager.Callbacks += MPProcess;
+    GUIWindowManager.MadVrCallbacks += MadVRMPProcess;
 
     GUIGraphicsContext.CurrentState = GUIGraphicsContext.State.STARTING;
 
@@ -1423,7 +1470,8 @@ public class MediaPortalApp : D3D, IRender
     {
       UpdateStats();
 
-      if (GUIGraphicsContext.IsEvr && g_Player.HasVideo && GUIGraphicsContext.Vmr9Active)
+      if (GUIGraphicsContext.VideoRenderer == GUIGraphicsContext.VideoRendererType.EVR && 
+           g_Player.HasVideo && GUIGraphicsContext.Vmr9Active)
       {
         if (_showStats != _showStatsPrevious)
         {
@@ -1573,6 +1621,10 @@ public class MediaPortalApp : D3D, IRender
         case WM_EXITSIZEMOVE:
           Log.Debug("Main: WM_EXITSIZEMOVE");
           PluginManager.WndProc(ref msg);
+
+          // Force a madVR refresh to resize MP window
+          // TODO how to handle it better
+          g_Player.RefreshMadVrVideo();
           break;
 
         // only allow window to be moved inside a valid working area
@@ -1605,6 +1657,17 @@ public class MediaPortalApp : D3D, IRender
           {
             OnDisplayChange(ref msg);
             PluginManager.WndProc(ref msg);
+          }
+          Screen screen = Screen.FromControl(this);
+          if (GUIGraphicsContext.VideoRenderer == GUIGraphicsContext.VideoRendererType.madVR && AppActive &&
+              (!Equals(screen.Bounds.Size.Width, GUIGraphicsContext.currentScreen.Bounds.Width) ||
+               !Equals(screen.Bounds.Size.Height, GUIGraphicsContext.currentScreen.Bounds.Height)))
+          {
+            NeedRecreateSwapChain = true;
+            GUIGraphicsContext.ForceMadVRRefresh = true;
+
+            Log.Debug("Main: WM_DISPLAYCHANGE madVR screen change triggered");
+            Log.Debug("Main: WM_DISPLAYCHANGE madVR Width x Height : {0} x {1}", screen.Bounds.Size.Width, screen.Bounds.Size.Height);
           }
           break;
 
@@ -2195,7 +2258,7 @@ public class MediaPortalApp : D3D, IRender
               try
               {
                 GUIGraphicsContext.DeviceAudioConnected--;
-                if (_stopOnLostAudioRenderer)
+                if (_stopOnLostAudioRenderer && GUIGraphicsContext.CurrentAudioRenderer.Trim().ToLowerInvariant() == deviceName.Trim().ToLowerInvariant())
                 {
                   Log.Debug("Main: Stop playback");
                   g_Player.Stop();
@@ -2216,7 +2279,7 @@ public class MediaPortalApp : D3D, IRender
               try
               {
                 GUIGraphicsContext.DeviceAudioConnected++;
-                if (_stopOnLostAudioRenderer)
+                if (_stopOnLostAudioRenderer && GUIGraphicsContext.CurrentAudioRenderer.Trim().ToLowerInvariant() == deviceName.Trim().ToLowerInvariant())
                 {
                   Log.Debug("Main: Stop playback");
                   g_Player.Stop();
@@ -2272,7 +2335,8 @@ public class MediaPortalApp : D3D, IRender
       GUIGraphicsContext.DX9Device.DeviceLost -= OnDeviceLost;
     }
 
-    if (VMR9Util.g_vmr9 != null && GUIGraphicsContext.Vmr9Active && GUIGraphicsContext.IsEvr)
+    if (VMR9Util.g_vmr9 != null && GUIGraphicsContext.Vmr9Active &&
+        GUIGraphicsContext.VideoRenderer == GUIGraphicsContext.VideoRendererType.EVR)
     {
       VMR9Util.g_vmr9.UpdateEVRDisplayFPS(); // Update FPS
     }
@@ -2922,22 +2986,42 @@ public class MediaPortalApp : D3D, IRender
     }
   }
 
+  /// <summary>
+  /// Process() gets called for madVR.
+  /// It contains the message loop 
+  /// </summary>
+  public void MadVRMPProcess()
+  {
+    if (!_suspended && AppActive)
+    {
+      try
+      {
+        int process = 10;
+        while (process > 0)
+        {
+          FullRender();
+          process--;
+        }
+      }
+      catch (Exception ex)
+      {
+        Log.Error(ex);
+      }
+    }
+  }
+
   #endregion
 
   #region RenderFrame()
 
-  /// <summary>
-  /// 
-  /// </summary>
-  /// <param name="timePassed"></param>
-  public void RenderFrame(float timePassed)
+  public void RenderFrame(float timePassed, GUILayers layers, ref bool uiVisible)
   {
     if (!_suspended && AppActive)
     {
       try
       {
         CreateStateBlock();
-        GUILayerManager.Render(timePassed);
+        uiVisible = GUILayerManager.Render(timePassed, layers);
         RenderStats();
       }
       catch (Exception ex)
@@ -2946,6 +3030,12 @@ public class MediaPortalApp : D3D, IRender
         Log.Error("RenderFrame exception {0} {1} {2}", ex.Message, ex.Source, ex.StackTrace);
       }
     }
+  }
+
+  public void RenderFrame(float timePassed, GUILayers layers)
+  {
+    bool uiVisible = false;
+    RenderFrame(timePassed, layers, ref uiVisible);
   }
 
   #endregion
@@ -3447,7 +3537,6 @@ public class MediaPortalApp : D3D, IRender
 
     Log.Info("Startup: Starting Window Manager");
     GUIWindowManager.PreInit();
-    GUIGraphicsContext.CurrentState = GUIGraphicsContext.State.RUNNING;
 
     Log.Info("Startup: Activating Window Manager");
     if ((_startWithBasicHome) && (File.Exists(GUIGraphicsContext.GetThemedSkinFile(@"\basichome.xml"))))
@@ -3482,6 +3571,9 @@ public class MediaPortalApp : D3D, IRender
     // ReSharper restore ObjectCreationAsStatement
 
     SetProcessWorkingSetSize(Process.GetCurrentProcess().Handle, -1, -1);
+
+    // Set running there some plugin can loop otherwise
+    GUIGraphicsContext.CurrentState = GUIGraphicsContext.State.RUNNING;
   }
 
 
@@ -3540,6 +3632,11 @@ public class MediaPortalApp : D3D, IRender
     {
       if (GUIGraphicsContext.InVmr9Render)
       {
+        if (GUIGraphicsContext.VideoRenderer == GUIGraphicsContext.VideoRendererType.madVR)
+        {
+          GUIGraphicsContext.InVmr9Render = false;
+          return;
+        }
         Log.Error("Main: MediaPortal.Render() called while VMR9 render - {0} / {1}", GUIGraphicsContext.Vmr9Active,
                   GUIGraphicsContext.Vmr9FPS);
         return;
@@ -3572,7 +3669,7 @@ public class MediaPortalApp : D3D, IRender
             CreateStateBlock();
             GUIGraphicsContext.SetScalingResolution(0, 0, false);
             // ask the layer manager to render all layers
-            GUILayerManager.Render(timePassed);
+            GUILayerManager.Render(timePassed, GUILayers.all);
             RenderStats();
             GUIFontManager.Present();
             GUIGraphicsContext.DX9Device.EndScene();
@@ -3837,6 +3934,11 @@ public class MediaPortalApp : D3D, IRender
       return;
     }
 
+    if (Thread.CurrentThread.Name != "MPMain" && Thread.CurrentThread.Name != "Config Main")
+    {
+      return;
+    }
+
 #if !DEBUG
     try
     {
@@ -3852,6 +3954,7 @@ public class MediaPortalApp : D3D, IRender
       {
         GUIWindowManager.DispatchThreadMessages();
         GUIWindowManager.ProcessWindows();
+        GUIGraphicsContext.VideoWindowChangedCallBack();
       }
       catch (FileNotFoundException ex)
       {
@@ -3913,6 +4016,19 @@ public class MediaPortalApp : D3D, IRender
               }
             }
           }
+        }
+      }
+      TimeSpan tsScreen = DateTime.Now - ScreenSaverEventTimer;
+      if (tsScreen.TotalSeconds >= 45)
+      // Reset screensaver all 45 seconds (less than the minimal windows configuration i.e 1 minute even if MP is not focused)
+      {
+        // Disable Windows screensaver even if MP is not focused
+        if ((GUIGraphicsContext.IsFullScreenVideo && !g_Player.Paused) ||
+            GUIWindowManager.ActiveWindow == (int)GUIWindow.Window.WINDOW_SLIDESHOW)
+        {
+          //Log.Debug("Main: Active player - resetting idle timer for display to be turned off");
+          SetThreadExecutionState(EXECUTION_STATE.ES_SYSTEM_REQUIRED | EXECUTION_STATE.ES_DISPLAY_REQUIRED);
+          ScreenSaverEventTimer = DateTime.Now;
         }
       }
 
@@ -4277,9 +4393,27 @@ public class MediaPortalApp : D3D, IRender
 
             string fileName = string.Format("{0}\\{1:00}-{2:00}-{3:00}", directory, DateTime.Now.Hour, DateTime.Now.Minute, DateTime.Now.Second);
             Log.Info("Main: Taking screenshot - Target: {0}.png", fileName);
-            Surface backbuffer = GUIGraphicsContext.DX9Device.GetBackBuffer(0, 0, BackBufferType.Mono);
-            SurfaceLoader.Save(fileName + ".png", ImageFileFormat.Png, backbuffer);
-            backbuffer.Dispose();
+            if (GUIGraphicsContext.VideoRenderer != GUIGraphicsContext.VideoRendererType.madVR)
+            {
+              Surface backbuffer = GUIGraphicsContext.DX9Device.GetBackBuffer(0, 0, BackBufferType.Mono);
+              SurfaceLoader.Save(fileName + ".png", ImageFileFormat.Png, backbuffer);
+              backbuffer.Dispose();
+            }
+            else if (GUIGraphicsContext.VideoRenderer == GUIGraphicsContext.VideoRendererType.madVR && GUIGraphicsContext.InVmr9Render)
+            {
+              if (GUIGraphicsContext.DX9DeviceMadVr != null)
+              {
+                Surface backbuffer = GUIGraphicsContext.DX9DeviceMadVr.GetBackBuffer(0, 0, BackBufferType.Mono);
+                SurfaceLoader.Save(fileName + ".png", ImageFileFormat.Png, backbuffer);
+                backbuffer.Dispose();
+              }
+            }
+            else
+            {
+              Surface backbuffer = GUIGraphicsContext.DX9Device.GetBackBuffer(0, 0, BackBufferType.Mono);
+              SurfaceLoader.Save(fileName + ".png", ImageFileFormat.Png, backbuffer);
+              backbuffer.Dispose();
+            }
             Log.Info("Main: Taking screenshot done");
           }
           catch (Exception ex)
@@ -4293,6 +4427,15 @@ public class MediaPortalApp : D3D, IRender
           if (!GUIGraphicsContext.IsFullScreenVideo && g_Player.ShowFullScreenWindow())
           {
             return;
+          }
+          break;
+
+        case Action.ActionType.ACTION_MADVR_SCREEN_REFRESH:
+          // We need to do a refresh of screen when using madVR only if resolution screen has change during playback
+          if (GUIGraphicsContext.VideoRenderer == GUIGraphicsContext.VideoRendererType.madVR && (NeedRecreateSwapChain || Windowed))
+          {
+            RecreateSwapChain(false);
+            Log.Debug("Main: recreate swap chain for madVR done");
           }
           break;
       }
@@ -4565,13 +4708,11 @@ public class MediaPortalApp : D3D, IRender
   #region keypress handlers
 
   /// <summary>
-  /// 
+  /// Major mess goes here.
   /// </summary>
   /// <param name="e"></param>
-  protected override void KeyPressEvent(KeyPressEventArgs e)
+  private void LegacyKeyPressEvent(KeyPressEventArgs e)
   {
-    GUIGraphicsContext.BlankScreen = false;
-    _idlePluginActive = false;
     var key = new Key(e.KeyChar, 0);
     var action = new Action();
     if (GUIWindowManager.IsRouted || GUIWindowManager.ActiveWindowEx == (int)GUIWindow.Window.WINDOW_TV_SEARCH)
@@ -4627,15 +4768,52 @@ public class MediaPortalApp : D3D, IRender
 
     action = new Action(key, Action.ActionType.ACTION_KEY_PRESSED, 0, 0);
     GUIGraphicsContext.OnAction(action);
+
   }
 
-
   /// <summary>
-  /// 
+  /// This is coming indirectly from System.Windows.Forms.Control.KeyPress event.
+  /// I believe it does not fire for some keys such as direction arrows and escape.
+  /// </summary>
+  /// <param name="e"></param>
+  protected override void KeyPressEvent(KeyPressEventArgs e)
+  {
+    GUIGraphicsContext.BlankScreen = false;
+    _idlePluginActive = false;
+
+    if (!_hidKeyboard)
+    {
+      // HID keyboard handler is disabled, use legacy handler instead.
+      // TODO: Remove this if and whenever our transition to full HID is completed.
+      LegacyKeyPressEvent(e);
+      return;
+    }
+
+    // Only text input is going through here
+    // All other action mapping is taken care of by our HID plugin.
+    // TODO: Consider doing text input through HID too
+    if (GUIWindowManager.NeedsTextInput)
+    {
+      var key = new Key(e.KeyChar, 0);
+      Action action = new Action(key, Action.ActionType.ACTION_KEY_PRESSED, 0, 0);
+      GUIGraphicsContext.OnAction(action);
+    }
+  }
+
+  
+  /// <summary>
+  /// This is coming indirectly from System.Windows.Forms.Control.KeyDown event.
+  /// It's notably needed to be able to handle direction arrows and escape.
   /// </summary>
   /// <param name="e"></param>
   protected override void KeyDownEvent(KeyEventArgs e)
   {
+    if (_hidKeyboard && !GUIWindowManager.NeedsTextInput)
+    {
+      // No need to do anything if HID keyboard is enabled
+      return;
+    }
+
     if (!_suspended && AppActive)
     {
       GUIGraphicsContext.ResetLastActivity();
@@ -5102,7 +5280,21 @@ public class MediaPortalApp : D3D, IRender
             dlgNotify.SetHeading(GUILocalizeStrings.Get(1020)); // Information
             dlgNotify.SetText(GUILocalizeStrings.Get(300024)); // Scan finished
             dlgNotify.DoModal(GUIWindowManager.ActiveWindow);
-          }       
+          }
+          break;
+
+        case GUIMessage.MessageType.GUI_MSG_UNFOCUS_FOCUS:
+          if (GUIGraphicsContext.VideoRenderer == GUIGraphicsContext.VideoRendererType.madVR)
+          {
+            // Workaround for madVR and 3D need to force a window change.
+            if (!Windowed)
+            {
+              FormBorderStyle = FormBorderStyle.FixedSingle;
+              FormBorderStyle = FormBorderStyle.None;
+              Log.Debug("Main: madVR for 3D done");
+              ForceMPFocus();
+            }
+          }
           break;
       }
     }

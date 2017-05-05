@@ -19,6 +19,8 @@
 #endregion
 
 using System;
+using System.Threading;
+using System.Runtime.InteropServices;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
@@ -29,6 +31,7 @@ using MediaPortal.Configuration;
 using MediaPortal.Player;
 using MediaPortal.Profile;
 using MediaPortal.Util;
+using MediaPortal;
 using Microsoft.DirectX;
 using Microsoft.DirectX.Direct3D;
 
@@ -48,16 +51,22 @@ namespace MediaPortal.GUI.Library
 
   public delegate void VideoReceivedHandler();
 
+  public delegate void OnRenderBlackHandler();
 
   /// <summary>
   /// Singleton class which holds all GFX related settings
   /// </summary>
   public class GUIGraphicsContext
   {
+    [DllImport("user32.dll", SetLastError = true)]
+    static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
     public static event BlackImageRenderedHandler OnBlackImageRendered;
     public static event VideoReceivedHandler OnVideoReceived;
-    
+    public static event OnRenderBlackHandler OnRenderBlack;
+
     private static readonly object RenderLoopLock = new object();  // Rendering loop lock - use this when removing any D3D resources
+    private static readonly object RenderLoopMadVrLock = new object();  // Rendering loop madVR lock - use this when calling video window changed
     private static readonly List<Point> Cameras = new List<Point>();
     private static readonly List<TransformMatrix> GroupTransforms = new List<TransformMatrix>();
     private static TransformMatrix _guiTransform = new TransformMatrix();
@@ -76,6 +85,13 @@ namespace MediaPortal.GUI.Library
       LOST
       // ReSharper restore InconsistentNaming
     }
+
+    public enum VideoRendererType
+    {
+      VMR9 = 0,
+      EVR = 1,
+      madVR = 2
+    }
     
     public static event SendMessageHandler Receivers; // triggered when a message has arrived
     public static event OnActionHandler OnNewAction; // triggered when a action has arrived
@@ -84,10 +100,13 @@ namespace MediaPortal.GUI.Library
 
     public static Device DX9Device = null; // pointer to current DX9 device
 
+    public static Device DX9DeviceMadVr = null; // pointer to current DX9 madVR device
+
     // ReSharper disable InconsistentNaming
     public static Graphics graphics = null; // GDI+ Graphics object
     public static Form form = null; // Current GDI form
     public static IAutoCrop autoCropper = null;
+    public static readonly object WindowChangeLock = new Object();
     // ReSharper restore InconsistentNaming
 
     private const float DegreeToRadian = 0.01745329f;
@@ -96,6 +115,7 @@ namespace MediaPortal.GUI.Library
     private const int WM_SYSCOMMAND = 0x0112;
     private const int MONITOR_ON = -1;
     private const int MONITOR_OFF = 2;
+
     // ReSharper restore InconsistentNaming
     private static bool m_volumeOverlay = false; // Volume overlay
     private static bool m_disableVolumeOverlay = false; // Window volume overlay allowed
@@ -136,10 +156,13 @@ namespace MediaPortal.GUI.Library
     private static bool _idleTimePowerSaving;
     private static bool _turnOffMonitor;
     private static bool _vmr9Allowed = true;
+    private static VideoRendererType _videoRendererType;
     private static DateTime _lastActivity = DateTime.Now;
     private static Screen _currentScreen;
     private static Screen _currentStartScreen;
     private static int _currentMonitorIdx = -1;
+    private static string _currentAudioRenderer = "";
+
     private static readonly bool IsDX9EXused = OSInfo.OSInfo.VistaOrLater();
     private static bool _allowRememberLastFocusedItem = true;
     private static bool _fullHD3DFormat = false;
@@ -192,6 +215,9 @@ namespace MediaPortal.GUI.Library
     {
       Render3DMode = eRender3DMode.None;
       Switch3DSides = false;
+      SideBySideDone = false;
+      TopAndBottomDone = false;
+      NoneDone = false;
       Convert2Dto3DSkewFactor = 0;
       LastFrames = new List<Texture>();
       LastFramesIndex = 0;
@@ -323,12 +349,9 @@ namespace MediaPortal.GUI.Library
                 Log.Warn("GraphicContext: Could not power monitor {0}", value ? "off" : "on");
               }
             }
-            _blankScreen = value;
 
-            if (OnVideoWindowChanged != null)
-            {
-              OnVideoWindowChanged();
-            }
+            _blankScreen = value;
+            VideoWindowChanged();
           }
           catch (Exception ex)
           {
@@ -801,7 +824,19 @@ namespace MediaPortal.GUI.Library
     {
       if (OnVideoReceived != null)
       {
+        //Log.Debug("GraphicContext VideoReceived()");
         OnVideoReceived();
+      }
+    }
+
+    /// <summary>
+    /// 
+    /// </summary>
+    public static void RenderBlack()
+    {
+      if (OnRenderBlack != null)
+      {
+        OnRenderBlack();
       }
     }
 
@@ -819,10 +854,7 @@ namespace MediaPortal.GUI.Library
       set
       {
         _geometryType = value;
-        if (OnVideoWindowChanged != null)
-        {
-          OnVideoWindowChanged();
-        }
+        VideoWindowChanged();
       }
     }
 
@@ -970,13 +1002,23 @@ namespace MediaPortal.GUI.Library
         if (value != _isFullScreenVideo)
         {
           _isFullScreenVideo = value;
-          if (OnVideoWindowChanged != null)
-          {
-            OnVideoWindowChanged();
-          }
+          GUIGraphicsContext.VideoWindowFullscreen = _isFullScreenVideo;
+          VideoWindowChanged();
         }
       }
     }
+
+    public static bool VideoWindowFullscreen { get; set; }
+
+    /// <summary>
+    /// Get/Set render GUI for madVR
+    /// </summary>
+    public static bool RenderGui { get; set; }
+
+    /// <summary>
+    /// Get/Set render Overlay for madVR
+    /// </summary>
+    public static bool RenderOverlay { get; set; }
 
     /// <summary>
     /// Get/Set video window rectangle
@@ -989,13 +1031,61 @@ namespace MediaPortal.GUI.Library
         if (!_rectVideo.Equals(value))
         {
           _rectVideo = value;
-          if (OnVideoWindowChanged != null)
+          VideoWindowChanged();
+        }
+      }
+    }
+
+    /// <summary>
+    /// Delegates video window size/position change notify
+    /// </summary>
+    public static void VideoWindowChanged()
+    {
+      // madVR
+      if (GUIGraphicsContext.VideoRenderer == GUIGraphicsContext.VideoRendererType.madVR && GUIGraphicsContext.InVmr9Render)
+      {
+        GUIGraphicsContext.VideoWindowChangedDone = true;
+      }
+      else
+      {
+        OnVideoWindowChanged?.Invoke();
+      }
+    }
+
+    /// <summary>
+    /// Callback video window size/position done by main thread
+    /// </summary>
+    public static void VideoWindowChangedCallBack()
+    {
+      if (GUIGraphicsContext.VideoRenderer == GUIGraphicsContext.VideoRendererType.madVR)
+      {
+        if (GUIGraphicsContext.VideoWindowChangedDone)
+        {
+          GUIGraphicsContext.VideoWindowChangedDone = false;
+          GUIGraphicsContext.OnVideoWindowChanged?.Invoke();
+
+          // madVR
+          //set video window position
+          if (GUIGraphicsContext.Vmr9Active && !GUIGraphicsContext.VideoWindowFullscreen)
           {
-            OnVideoWindowChanged();
+            GUIGraphicsContext.VideoWindowFullscreen = true;
+            GUIGraphicsContext.VideoWindow = new Rectangle(0, 0, 5, 5);
+            VMR9Util.g_vmr9.SceneMadVr();
+          }
+
+          if (GUIGraphicsContext.ForceMadVRRefresh)
+          {
+            Size client = GUIGraphicsContext.form.ClientSize;
+            VMR9Util.g_vmr9?.MadVrScreenResize(0, 0, client.Width, client.Height, false);
+            GUIGraphicsContext.NoneDone = false;
+            GUIGraphicsContext.TopAndBottomDone = false;
+            GUIGraphicsContext.SideBySideDone = false;
           }
         }
       }
     }
+
+    public static Rectangle rDest { get; set; }
 
     /// <summary>
     /// Get/Set application state (starting,running,stopping)
@@ -1027,9 +1117,9 @@ namespace MediaPortal.GUI.Library
         // some windows have overlay = false, but still have videocontrol.
         // switching to another window with overlay = false but without videocontrol will
         // leave old videocontrol "hanging" on screen (since dimensions aren't updated)
-        // if (m_bOverlay != value)
+        //if (bOldOverlay != value)
         {
-          bool bOldOverlay = _overlay;
+          bOldOverlay = _overlay;
           _overlay = value;
           if (!ShowBackground)
           {
@@ -1038,16 +1128,24 @@ namespace MediaPortal.GUI.Library
 
           if (!_overlay)
           {
-            VideoWindow = new Rectangle(0, 0, 1, 1);
+            lock (RenderMadVrLock)
+            {
+              VideoWindow = new Rectangle(0, 0, 1, 1);
+            }
           }
 
           if (bOldOverlay != _overlay && OnVideoWindowChanged != null)
           {
-            OnVideoWindowChanged();
+            lock (RenderMadVrLock)
+            {
+              VideoWindowChanged();
+            }
           }
         }
       }
     }
+
+    public static bool bOldOverlay { get; set; }
 
     /// <summary>
     /// Get/Set left screen calibration
@@ -1432,10 +1530,28 @@ namespace MediaPortal.GUI.Library
     /// </summary>
     public static bool IsVMR9Exclusive { get; set; }
 
-    /// <summary>
-    /// 
-    /// </summary>
-    public static bool IsEvr { get; set; }
+    public static VideoRendererType VideoRenderer
+    {
+      get { return _videoRendererType; }
+      set { _videoRendererType = value; }
+    }
+
+    public static void ScaleVideoWindow(ref int width, ref int height, ref float x, ref float y)
+    {
+      if (GUIGraphicsContext.VideoRenderer == GUIGraphicsContext.VideoRendererType.madVR)
+      {
+        Size client = GUIGraphicsContext.form.ClientSize;
+        float ration = 1.0f;
+        
+        if (DX9Device != null && DX9Device.PresentationParameters != null)
+          ration = (float)client.Width / (float)DX9Device.PresentationParameters.BackBufferWidth;
+
+        width = (int)((float)width * (float)ration);
+        height = (int)((float)height * (float)ration);
+        x *= ration;
+        y *= ration;
+      }
+    }
 
     /// <summary>
     /// 
@@ -1556,6 +1672,21 @@ namespace MediaPortal.GUI.Library
     }
 
     /// <summary>
+    /// Get/set current audio renderer name
+    /// </summary>
+    public static string CurrentAudioRenderer
+    {
+      set
+      {
+        _currentAudioRenderer = value;
+      }
+      get
+      {
+        return _currentAudioRenderer;
+      }
+    }
+
+    /// <summary>
     /// Returns true if the active window belongs to the my tv plugin
     /// </summary>
     /// <returns>
@@ -1642,8 +1773,54 @@ namespace MediaPortal.GUI.Library
     /// </summary>
     public static object RenderLock
     {
-      get { return RenderLoopLock; }
+      get
+      {
+        //// Added back this part for now and see if it stop the deadlock
+        //if (GUIGraphicsContext.VideoRenderer == GUIGraphicsContext.VideoRendererType.madVR && GUIGraphicsContext.InVmr9Render)
+        //{
+        //  return 0;
+        //}
+        return RenderLoopLock;
+      }
     }
+
+    /// <summary>
+    /// 
+    /// </summary>
+    public static object RenderMadVrLock
+    {
+      get
+      {
+        // Added back this part for now and see if it stop the deadlock
+        if (GUIGraphicsContext.VideoRenderer == GUIGraphicsContext.VideoRendererType.madVR)
+        {
+          return RenderLoopMadVrLock;
+        }
+        return 0;
+      }
+    }
+
+    /// <summary>
+    /// 
+    /// </summary>
+    public static bool IsSwitchingToNewSkin { get; set; }
+
+    public static int VideoWindowWidth { get; set; }
+    public static int VideoWindowHeight { get; set; }
+
+    public static bool IsWindowVisible { get; set; }
+    public static bool UpdateVideoWindow { get; set; }
+    public static bool MadVrOsd { get; set; }
+    public static bool MadVrStop { get; set; }
+    public static bool VideoWindowChangedDone { get; set; }
+    public static bool SetVideoWindowDone { get; set; }
+    public static bool VideoControl { get; set; }
+    public static bool SideBySideDone { get; set; }
+    public static bool TopAndBottomDone { get; set; }
+    public static bool NoneDone { get; set; }
+    public static bool ForceMadVRRefresh { get; set; }
+    public static bool ForceMadVRRefresh3D { get; set; }
+    public static bool ForceMadVRFirstStart { get; set; }
 
     /// <summary>
     /// Enable/Disable bypassing of UI Calibration transforms
@@ -2068,16 +2245,19 @@ namespace MediaPortal.GUI.Library
     public static void EndClip()
     {
       // Remove the current clip rectangle.
-      ClipRectangleStack.Pop();
+      if (ClipRectangleStack != null)
+      {
+        ClipRectangleStack.Pop();
 
-      // If the clip stack is empty then tell the font engine to stop clipping otherwise restore the current clip rectangle.
-      if (ClipRectangleStack.Count == 0)
-      {
-        DXNative.FontEngineSetClipDisable();
-      }
-      else
-      {
-        DX9Device.ScissorRectangle = ClipRectangleStack.Peek();
+        // If the clip stack is empty then tell the font engine to stop clipping otherwise restore the current clip rectangle.
+        if (ClipRectangleStack.Count == 0)
+        {
+          DXNative.FontEngineSetClipDisable();
+        }
+        else
+        {
+          DX9Device.ScissorRectangle = ClipRectangleStack.Peek();
+        }
       }
     }
   }

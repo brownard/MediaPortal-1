@@ -475,6 +475,7 @@ namespace MediaPortal.Configuration.Sections
             "MPC-HC",
             "DirectVobSub",
             "FFDShow",
+            "XySubFilter",
             "Disabled"});
       this.subEnginesCombo.Location = new System.Drawing.Point(16, 46);
       this.subEnginesCombo.Name = "subEnginesCombo";
@@ -1317,7 +1318,7 @@ namespace MediaPortal.Configuration.Sections
         DirectShowLib.IBaseFilter vobSub = null;
         try
         {
-          vobSub = (DirectShowLib.IBaseFilter)ClassId.CoCreateInstance(ClassId.DirectVobSubAutoload);
+          vobSub = (DirectShowLib.IBaseFilter) ClassId.CoCreateInstance(ClassId.DirectVobSubAutoload);
           DirectShowPropertyPage page = new DirectShowPropertyPage(vobSub);
           page.Show(this);
         }
@@ -1329,6 +1330,42 @@ namespace MediaPortal.Configuration.Sections
         {
           if (vobSub != null)
             Marshal.ReleaseComObject(vobSub);
+        }
+      }
+      else if (selection.Equals("XySubFilter"))
+      {
+        try
+        {
+          bool XySubFilter = false;
+          foreach (DsDevice device in DsDevice.GetDevicesOfCat(DirectShowLib.FilterCategory.LegacyAmFilterCategory))
+          {
+            try
+            {
+              if (device.Name != null)
+              {
+                if (device.Name.Contains("XySubFilter") &&
+                    device.DevicePath.ToLowerInvariant()
+                      .Contains(ClassId.XySubFilterNormal.ToString().ToLowerInvariant()))
+                {
+                  DirectShowPropertyPage page = new DirectShowPropertyPage((DsDevice) device);
+                  page.Show(this);
+                  XySubFilter = true;
+                }
+              }
+            }
+            catch (Exception)
+            {
+              MessageBox.Show("XySubFilter is not installed!");
+            }
+          }
+          if (!XySubFilter)
+          {
+            MessageBox.Show("XySubFilter is not installed!");
+          }
+        }
+        catch (Exception)
+        {
+          MessageBox.Show("XySubFilter is not installed!");
         }
       }
     }

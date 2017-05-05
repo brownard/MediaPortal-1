@@ -96,6 +96,11 @@ namespace MediaPortal.Player.Subtitles
 
     #region ISubEngine Members
 
+    public void SetDevice(IntPtr device)
+    {
+      MpcSubtitles.SetDevice(device);
+    }
+
     public bool LoadSubtitles(IGraphBuilder graphBuilder, string filename)
     {
       LoadSettings();
@@ -188,11 +193,11 @@ namespace MediaPortal.Player.Subtitles
       get { return this.autoSaveType; }
     }
 
-    public void Render(Rectangle subsRect, Rectangle frameRect)
+    public void Render(Rectangle subsRect, Rectangle frameRect, int xOffsetInPixels)
     {
       Rectangle r = posRelativeToFrame ? frameRect : subsRect;
       int posY = adjustPosY * r.Height / GUIGraphicsContext.Height;
-      MpcSubtitles.Render(r.X, r.Y + posY, r.Width, r.Height);
+      MpcSubtitles.Render(r.X, r.Y + posY, r.Width, r.Height, xOffsetInPixels);
     }
 
     public int GetCount()
@@ -233,12 +238,12 @@ namespace MediaPortal.Player.Subtitles
       set { MpcSubtitles.SetDelay(value); }
     }
 
-    public void DelayPlus()
+    public void DelayPlus(int subtitleDelay)
     {
       Delay = Delay + delayInterval;
     }
 
-    public void DelayMinus()
+    public void DelayMinus(int subtitleDelay)
     {
       Delay = Delay - delayInterval;
     }
@@ -270,6 +275,10 @@ namespace MediaPortal.Player.Subtitles
       [DllImport("mpcSubs.dll", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true, CharSet = CharSet.Unicode)]
       public static extern bool LoadSubtitles(IntPtr d3DDev, Size size, string filename, IGraphBuilder graphBuilder,
                                               string paths, int lcidCI);
+
+      //updates used D3D device
+      [DllImport("mpcSubs.dll", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true, CharSet = CharSet.Unicode)]
+      public static extern bool SetDevice(IntPtr d3DDev);
 
       //set sample time (set from EVR presenter, not used in case of vmr9)
       [DllImport("mpcSubs.dll", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
@@ -308,7 +317,7 @@ namespace MediaPortal.Player.Subtitles
       public static extern void SetEnable(bool enable);
 
       [DllImport("mpcSubs.dll", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-      public static extern void Render(int x, int y, int width, int height);
+      public static extern void Render(int x, int y, int width, int height, int xOffsetInPixels);
 
       [DllImport("mpcSubs.dll", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
       public static extern int GetDelay();

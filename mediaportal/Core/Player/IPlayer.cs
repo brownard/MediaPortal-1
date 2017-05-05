@@ -31,6 +31,7 @@ namespace MediaPortal.Player
   {
     MPEG2 = 1,
     H264 = 2,
+    HEVC = 3,
     MPEG4
   }
 
@@ -619,6 +620,12 @@ namespace MediaPortal.Player
     /// because the coordinates have been changed
     /// </summary>
     public virtual void SetVideoWindow() {}
+
+    /// <summary>
+    /// Method which is called by MP if the player needs to update its madVR video window
+    /// because the coordinates have been changed
+    /// </summary>
+    public virtual void SetVideoWindowMadVR() { }
 
     /// <summary>
     /// Property to get/set the contrast

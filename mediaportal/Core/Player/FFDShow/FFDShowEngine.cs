@@ -157,6 +157,8 @@ namespace MediaPortal.Player.Subtitles
 
     #region ISubEngine Members
 
+    public void SetDevice(IntPtr device) {}
+
     public bool LoadSubtitles(IGraphBuilder graphBuilder, string filename)
     {
       LoadSettings();
@@ -230,7 +232,7 @@ namespace MediaPortal.Player.Subtitles
       get { return this.autoSaveType; }
     }
 
-    public void Render(Rectangle subsRect, Rectangle frameRect)
+    public void Render(Rectangle subsRect, Rectangle frameRect, int xOffsetInPixels)
     {
       /*Rectangle r = posRelativeToFrame ? frameRect : subsRect;
       int posY = adjustPosY * r.Height / GUIGraphicsContext.Height;
@@ -315,12 +317,12 @@ namespace MediaPortal.Player.Subtitles
       set { ffdshowAPI.SubtitlesDelay = value; }
     }
 
-    public void DelayPlus()
+    public void DelayPlus(int subtitleDelay)
     {
       Delay = Delay + delayInterval;
     }
 
-    public void DelayMinus()
+    public void DelayMinus(int subtitleDelay)
     {
       Delay = Delay - delayInterval;
     }

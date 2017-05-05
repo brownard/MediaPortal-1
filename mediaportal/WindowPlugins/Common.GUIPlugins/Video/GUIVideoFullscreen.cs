@@ -908,14 +908,14 @@ namespace MediaPortal.GUI.Video
         case Action.ActionType.ACTION_SUBTITLE_DELAY_MIN:
           if (g_Player.EnableSubtitle)
           {
-            SubEngine.GetInstance().DelayMinus();
+            SubEngine.GetInstance().DelayMinus(0);
             ShowSubtitleDelayStatus();
           }
           break;
         case Action.ActionType.ACTION_SUBTITLE_DELAY_PLUS:
           if (g_Player.EnableSubtitle)
           {
-            SubEngine.GetInstance().DelayPlus();
+            SubEngine.GetInstance().DelayPlus(0);
             ShowSubtitleDelayStatus();
           }
           break;
@@ -1220,7 +1220,6 @@ namespace MediaPortal.GUI.Video
               GUIWindowManager.IsOsdVisible = false;
               GUIWindowManager.IsPauseOsdVisible = false;
               GUIGraphicsContext.IsFullScreenVideo = false;
-
               GUILayerManager.UnRegisterLayer(this);
 
               /*imgVolumeMuteIcon.SafeDispose();
@@ -2445,9 +2444,29 @@ namespace MediaPortal.GUI.Video
 
     #region IRenderLayer
 
+    private bool CheckScreenState()
+    {
+      return (screenState != null && (screenState.OsdVisible ||
+                                      screenState.PauseOsdVisible || screenState.Paused ||
+                                      screenState.ContextMenuVisible ||
+                                      screenState.ShowStatusLine ||
+                                      screenState.ShowTime ||
+                                      screenState.ShowSkipBar ||
+                                      screenState.wasVMRBitmapVisible ||
+                                      screenState.NotifyDialogVisible ||
+                                      screenState.volumeVisible ||
+                                      screenState.forbiddenVisible || 
+                                      Math.Abs(screenState.Speed - 1) > 0 || 
+                                      screenState.SeekStep != 0));
+    }
+
     public bool ShouldRenderLayer()
     {
-      return true;
+      if (CheckScreenState())
+      {
+        return true;
+      }
+      return false;
     }
 
     public void RenderLayer(float timePassed)

@@ -193,7 +193,7 @@ namespace MediaPortal.Player
     /// Finds the monitorIndex based on current specified screen on its primary monitor
     /// </summary>
     /// <returns>The monitorIndex that has the specified screen on its primary monitor</returns>
-    protected static int FindMonitorIndexForScreen()
+    protected internal static int FindMonitorIndexForScreen()
     {
       uint deviceNum = 0;
       DISPLAY_DEVICE displayDevice = new DISPLAY_DEVICE();
@@ -709,6 +709,17 @@ namespace MediaPortal.Player
 
     public static void SetRefreshRateBasedOnFPS(double fps, string strFile, MediaType type)
     {
+      if (GUIGraphicsContext.VideoRenderer == GUIGraphicsContext.VideoRendererType.madVR)
+      {
+        using (Settings xmlreader = new MPSettings())
+        {
+          if (!xmlreader.GetValueAsBool("general", "useInternalDRC", false))
+          {
+            return;
+          }
+        }
+      }
+
       double currentRR = 0;
       if ((GUIGraphicsContext.DX9Device.DeviceCaps.AdapterOrdinal == -1) ||
           (Manager.Adapters.Count <= GUIGraphicsContext.DX9Device.DeviceCaps.AdapterOrdinal) ||
@@ -757,7 +768,7 @@ namespace MediaPortal.Player
           NotifyRefreshRateChanged(newRRDescription, false);
         }
 
-        if (GUIGraphicsContext.Vmr9Active && GUIGraphicsContext.IsEvr)
+        if (GUIGraphicsContext.Vmr9Active && GUIGraphicsContext.VideoRenderer == GUIGraphicsContext.VideoRendererType.EVR)
         {
           Log.Info("RefreshRateChanger.SetRefreshRateBasedOnFPS: dynamic refresh rate change - notify video renderer");
           VMR9Util.g_vmr9.UpdateEVRDisplayFPS();

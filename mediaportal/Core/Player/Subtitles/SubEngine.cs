@@ -38,8 +38,10 @@ namespace MediaPortal.Player.Subtitles
 
     AutoSaveTypeEnum AutoSaveType { get; }
 
-    void Render(Rectangle subsRect, Rectangle frameRect);
+    void Render(Rectangle subsRect, Rectangle frameRect, int xOffsetInPixels);
     void SetTime(long nsSampleTime);
+
+    void SetDevice(IntPtr device);
 
     ////
     //subs management functions
@@ -63,8 +65,8 @@ namespace MediaPortal.Player.Subtitles
 
     int DelayInterval { get; }
 
-    void DelayPlus();
-    void DelayMinus();
+    void DelayPlus(int subtitleDelay);
+    void DelayMinus(int subtitleDelay);
 
     bool AutoShow { get; set; }
   }
@@ -78,6 +80,15 @@ namespace MediaPortal.Player.Subtitles
       return GetInstance(false);
     }
 
+    public static string GetSubtitleInstance()
+    {
+      using (Settings xmlreader = new MPSettings())
+      {
+        string engineType = xmlreader.GetValueAsString("subtitles", "engine", "DirectVobSub");
+        return engineType;
+      }
+    }
+
     public static ISubEngine GetInstance(bool forceinitialize)
     {
       if (engine == null || forceinitialize)
@@ -85,12 +96,19 @@ namespace MediaPortal.Player.Subtitles
         using (Settings xmlreader = new MPSettings())
         {
           string engineType = xmlreader.GetValueAsString("subtitles", "engine", "DirectVobSub");
-          if (engineType.Equals("MPC-HC"))
-            engine = new MpcEngine();
-          else if (engineType.Equals("FFDShow"))
-            engine = new FFDShowEngine();
-          else if (engineType.Equals("DirectVobSub"))
-            engine = new DirectVobSubEngine();
+          if (g_Player.Player is VideoPlayerVMR9)
+          {
+            if (engineType.Equals("MPC-HC"))
+              engine = new MpcEngine();
+            else if (engineType.Equals("FFDShow"))
+              engine = new FFDShowEngine();
+            else if (engineType.Equals("DirectVobSub"))
+              engine = new DirectVobSubEngine();
+            else if (engineType.Equals("XySubFilter"))
+              engine = new DirectVobSubEngine();
+            else
+              engine = new DummyEngine();
+          }
           else
             engine = new DummyEngine();
         }
@@ -101,6 +119,8 @@ namespace MediaPortal.Player.Subtitles
     public class DummyEngine : ISubEngine
     {
       #region ISubEngine Members
+
+      public void SetDevice(IntPtr device) {}
 
       public bool LoadSubtitles(IGraphBuilder graphBuilder, string filename)
       {
@@ -122,7 +142,7 @@ namespace MediaPortal.Player.Subtitles
         get { return AutoSaveTypeEnum.NEVER; }
       }
 
-      public void Render(Rectangle subsRect, Rectangle frameRect) {}
+      public void Render(Rectangle subsRect, Rectangle frameRect, int xOffsetInPixels) {}
 
       public void SetTime(long nsSampleTime) {}
 
@@ -164,9 +184,9 @@ namespace MediaPortal.Player.Subtitles
         get { return 0; }
       }
 
-      public void DelayPlus() {}
+      public void DelayPlus(int subtitleDelay) {}
 
-      public void DelayMinus() {}
+      public void DelayMinus(int subtitleDelay) {}
 
       public bool AutoShow
       {
